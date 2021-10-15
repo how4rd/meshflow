@@ -1,4 +1,4 @@
-
+import cv2
 
 class Frame:
 
@@ -8,8 +8,8 @@ class Frame:
     It contains the following attributes:
     `width`: The `Frame`'s width (number of columns) in pixels.
     `height`: The `Frame`'s height (number of rows) in pixels.
-    `pixels_color`: A (`width` by `height` by `3`) array containing the `Frame`'s pixels in color.
-    `pixels_bw`: A (`width` by `height`) array containing the `Frame`'s pixels in black and white.
+    `pixels_bgr`: A (`width` by `height` by `3`) array containing the `Frame`'s pixels in BGR.
+    `pixels_gray`: A (`width` by `height`) array containing the `Frame`'s pixels in grayscale.
     `features`: a list of the coordinates in the `Frame` corresponding to features.
     `velocities`: A (`MESH_WIDTH + 1` by `MESH_HEIGHT + 1`) array containing the velocity of each
         node relative to the previous `Frame`. `None` if no such `Frame` exists or not yet computed.
@@ -25,8 +25,10 @@ class Frame:
     OUTLIER_SUBREGIONS_WIDTH = 4
     OUTLIER_SUBREGIONS_HEIGHT = 4
 
-    def __init__(self, pixels_color, fast_feature_detector):
-        raise NotImplementedError
+    def __init__(self, pixels_bgr):
+        self.pixels_bgr = pixels_bgr
+        self.pixels_bw = cv2.cvtColor(pixels_bgr, cv2.COLOR_BGR2GRAY)
+        self.height, self.width = self.pixels_bw.shape
 
     def compute_unstabilized_mesh_velocities(self, feature_detector, next_frame=None):
         '''
