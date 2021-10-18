@@ -125,7 +125,14 @@ class Frame:
                     # print('\n'.join(ellipse_visualization))
                     # print('\n')
 
-        # TODO perform first median filter: sort each node's velocities and use the median
+        # perform first median filter:
+        # sort each node's velocities by x-component, then by y-component, and use the median
+        # element as the node's velocity
+        mesh_node_velocities = [
+            [sorted(velocities)[len(velocities)//2] if velocities else (0, 0) for velocities in row]
+            for row in mesh_node_velocities
+        ]
+
         # TODO perform second median filter: replace each node's velocity with the median velocity
         # of its neighbors
         print(mesh_node_velocities)
