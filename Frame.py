@@ -116,7 +116,7 @@ class Frame:
                         ellipse_slice_half_width = self.FEATURE_ELLIPSE_WIDTH_MESH_COLS * \
                             math.sqrt((1/4) - ((node_row - feature_row) / self.FEATURE_ELLIPSE_HEIGHT_MESH_ROWS) ** 2)
                         ellipse_left_col_inclusive = max(0, math.ceil(feature_col - ellipse_slice_half_width))
-                        ellipse_right_col_exclusive = 1 + min(self.MESH_ROW_COUNT, math.floor(feature_col + ellipse_slice_half_width))
+                        ellipse_right_col_exclusive = 1 + min(self.MESH_COL_COUNT, math.floor(feature_col + ellipse_slice_half_width))
 
                         for node_col in range(ellipse_left_col_inclusive, ellipse_right_col_exclusive):
                             # ellipse_visualization[node_row] = ellipse_visualization[node_row][:node_col] + '*' + ellipse_visualization[node_row][node_col+1:]
