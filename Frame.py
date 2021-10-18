@@ -36,8 +36,8 @@ class Frame:
 
     def __init__(self, pixels_bgr):
         self.pixels_bgr = pixels_bgr
-        self.pixels_bw = cv2.cvtColor(pixels_bgr, cv2.COLOR_BGR2GRAY)
-        self.height, self.width = self.pixels_bw.shape
+        self.pixels_gray = cv2.cvtColor(pixels_bgr, cv2.COLOR_BGR2GRAY)
+        self.height, self.width = self.pixels_gray.shape
 
 
     def compute_unstabilized_mesh_velocities(self, feature_detector, next_frame=None):
@@ -61,9 +61,9 @@ class Frame:
 
         for window_left_x in range(0, self.width, window_width):
             for window_top_y in range(0, self.height, window_height):
-                current_window = self.pixels_bw[window_top_y:window_top_y+window_height,
+                current_window = self.pixels_gray[window_top_y:window_top_y+window_height,
                                                 window_left_x:window_left_x+window_width]
-                next_window = next_frame.pixels_bw[window_top_y:window_top_y+window_height,
+                next_window = next_frame.pixels_gray[window_top_y:window_top_y+window_height,
                                                    window_left_x:window_left_x+window_width]
                 current_window_features, next_window_features = self._get_unstabilized_features_in_window(
                     feature_detector, current_window, next_window
