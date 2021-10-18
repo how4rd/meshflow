@@ -3,8 +3,10 @@ import cv2
 
 from Frame import Frame
 
+
 # the max number of frames to store in the frame buffer
 FRAME_BUFFER_MAX_LENGTH = 40
+
 
 def get_next_frame(video):
     '''
@@ -17,6 +19,7 @@ def get_next_frame(video):
         return None
 
     return Frame(pixels_bgr)
+
 
 def play_video(video, window_name):
     '''
@@ -43,12 +46,20 @@ def play_video(video, window_name):
 
     cv2.destroyAllWindows()
 
+
 def main():
     # TODO get video path from command line args
     video_path = 'videos/data_small-shaky-5.avi'
 
     video = cv2.VideoCapture(video_path)
-    frame_buffer = deque([None], maxlen=FRAME_BUFFER_MAX_LENGTH)
+
+    prev_frame = get_next_frame(video)
+    if prev_frame is None:
+        raise IOError(f'Video at <{video_path}> does not contain any frames.')
+
+    frame_buffer = deque([prev_frame], maxlen=FRAME_BUFFER_MAX_LENGTH)
+    # see https://stackoverflow.com/a/42618215
+    fast_feature_detector = cv2.FastFeatureDetector_create()
 
     while video.isOpened():
         frame = get_next_frame(video)
@@ -57,20 +68,9 @@ def main():
 
         frame_buffer.append(frame)
 
+        prev_frame.compute_unstabilized_mesh_velocities(fast_feature_detector, frame)
+
     video.release()
-
-# def main():
-#     # TODO get video path from command line args
-#     video_path = 'videos/data_small-shaky-5.avi'
-
-#     video = cv2.VideoCapture(video_path)
-#     play_video(video, video_path)
-#     video.release()
-
-#     # read in video;
-#     # adapted from https://www.geeksforgeeks.org/python-play-a-video-using-opencv/
-#     while video.isOpened():
-#         frame = get_next_frame(video)
 
 
 if __name__ == '__main__':
