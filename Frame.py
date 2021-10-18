@@ -71,9 +71,14 @@ class Frame:
         window_width = math.ceil(self.width / self.OUTLIER_SUBREGIONS_COL_COUNT)
         window_height = math.ceil(self.height / self.OUTLIER_SUBREGIONS_ROW_COUNT)
 
-        # mesh_node_velocities[row][col] contains a list of tuples (v_x, v_y) corresponding to all
-        # the velocities of features nearby the node at the given row and column
-        mesh_node_velocities = [[[] for _ in range(self.MESH_COL_COUNT + 1)] for _ in range(self.MESH_ROW_COUNT + 1)]
+        # mesh_node_nearby_feature_velocities[row][col] contains a tuple
+        # (x_velocities, y_velocities)
+        # containing all the x- and y-velocities of features nearby the node at the given row and
+        # column
+        mesh_node_nearby_feature_velocities = [
+            [([], []) for _ in range(self.MESH_COL_COUNT + 1)]
+            for _ in range(self.MESH_ROW_COUNT + 1)
+        ]
 
         for window_left_x in range(0, self.width, window_width):
             for window_top_y in range(0, self.height, window_height):
@@ -86,9 +91,8 @@ class Frame:
                 if current_window_feature_positions is None:
                     break
 
-                # calculate features' velocities
+                # calculate features' velocities; see https://stackoverflow.com/a/44409124
                 current_window_velocities = next_window_feature_positions - current_window_feature_positions
-                # see https://stackoverflow.com/a/44409124
                 current_window_positions_velocities = np.c_[current_window_feature_positions, current_window_velocities]
 
                 # apply features' velocities to nearby mesh nodes
@@ -96,7 +100,8 @@ class Frame:
                     # the feature's coordinates in units of mesh rows and columns
                     feature_col = feature_position_and_velocity[0][0] / self.mesh_col_width
                     feature_row = feature_position_and_velocity[0][1] / self.mesh_row_height
-                    feature_velocity = (feature_position_and_velocity[0][2], feature_position_and_velocity[0][3])
+                    feature_x_velocity = feature_position_and_velocity[0][2]
+                    feature_y_velocity = feature_position_and_velocity[0][3]
 
                     # Draw an ellipse around each feature
                     # of width self.FEATURE_ELLIPSE_WIDTH_MESH_COLS
@@ -120,7 +125,8 @@ class Frame:
 
                         for node_col in range(ellipse_left_col_inclusive, ellipse_right_col_exclusive):
                             # ellipse_visualization[node_row] = ellipse_visualization[node_row][:node_col] + '*' + ellipse_visualization[node_row][node_col+1:]
-                            mesh_node_velocities[node_row][node_col].append(feature_velocity)
+                            mesh_node_nearby_feature_velocities[node_row][node_col][0].append(feature_x_velocity)
+                            mesh_node_nearby_feature_velocities[node_row][node_col][1].append(feature_y_velocity)
 
                     # print('\n'.join(ellipse_visualization))
                     # print('\n')
@@ -128,14 +134,22 @@ class Frame:
         # perform first median filter:
         # sort each node's velocities by x-component, then by y-component, and use the median
         # element as the node's velocity
-        mesh_node_velocities = [
-            [sorted(velocities)[len(velocities)//2] if velocities else (0, 0) for velocities in row]
-            for row in mesh_node_velocities
-        ]
+        mesh_node_velocities_unsmoothed = np.array([
+            [
+                (
+                    sorted(x_velocities)[len(x_velocities)//2],
+                    sorted(y_velocities)[len(y_velocities)//2]
+                )
+                if x_velocities else (0, 0)
+                for x_velocities, y_velocities in row
+            ]
+            for row in mesh_node_nearby_feature_velocities
+        ])
+
+        print(mesh_node_velocities_unsmoothed)
 
         # TODO perform second median filter: replace each node's velocity with the median velocity
         # of its neighbors
-        print(mesh_node_velocities)
 
 
 
