@@ -1,6 +1,7 @@
 import cv2
 import math
 import numpy as np
+from scipy.ndimage import median_filter
 
 class Frame:
     '''
@@ -11,9 +12,9 @@ class Frame:
     `height`: The `Frame`'s height (number of rows) in pixels.
     `pixels_bgr`: A (`width` by `height` by `3`) array containing the `Frame`'s pixels in BGR.
     `pixels_gray`: A (`width` by `height`) array containing the `Frame`'s pixels in grayscale.
-    `mesh_velocities`: A (`MESH_COL_COUNT + 1` by `MESH_ROW_COUNT + 1`) array containing the
-        velocity of each node relative to the previous `Frame`. `None` if no such `Frame` exists or
-        not yet computed.
+    `mesh_velocities`: A (`MESH_COL_COUNT + 1` by `MESH_ROW_COUNT + 1` by `2`) array containing the
+        x- and y-velocity of each node relative to the previous `Frame`. `None` if no such `Frame`
+        exists or not yet computed.
     `mesh_col_width`: The width in pixels of each column in the mesh.
     `mesh_row_height`: The height in pixels of each row in the mesh.
     '''
@@ -54,8 +55,8 @@ class Frame:
     def compute_unstabilized_mesh_velocities(self, feature_detector, next_frame=None):
         '''
         Given a feature detector (cv2.Feature2D) and the next `Frame` in the video (or `None` if
-        none exists), estimate the velocity of the nodes in this `Frame` and set the `velocities`
-        attribute with the result.
+        none exists), estimate the velocity of the nodes in this `Frame` and set the
+        `mesh_velocities` attribute with the result.
         '''
 
         if next_frame is None:
@@ -71,11 +72,11 @@ class Frame:
         window_width = math.ceil(self.width / self.OUTLIER_SUBREGIONS_COL_COUNT)
         window_height = math.ceil(self.height / self.OUTLIER_SUBREGIONS_ROW_COUNT)
 
-        # mesh_node_nearby_feature_velocities[row][col] contains a tuple
+        # mesh_nearby_feature_velocities[row][col] contains a tuple
         # (x_velocities, y_velocities)
         # containing all the x- and y-velocities of features nearby the node at the given row and
         # column
-        mesh_node_nearby_feature_velocities = [
+        mesh_nearby_feature_velocities = [
             [([], []) for _ in range(self.MESH_COL_COUNT + 1)]
             for _ in range(self.MESH_ROW_COUNT + 1)
         ]
@@ -125,16 +126,13 @@ class Frame:
 
                         for node_col in range(ellipse_left_col_inclusive, ellipse_right_col_exclusive):
                             # ellipse_visualization[node_row] = ellipse_visualization[node_row][:node_col] + '*' + ellipse_visualization[node_row][node_col+1:]
-                            mesh_node_nearby_feature_velocities[node_row][node_col][0].append(feature_x_velocity)
-                            mesh_node_nearby_feature_velocities[node_row][node_col][1].append(feature_y_velocity)
+                            mesh_nearby_feature_velocities[node_row][node_col][0].append(feature_x_velocity)
+                            mesh_nearby_feature_velocities[node_row][node_col][1].append(feature_y_velocity)
 
-                    # print('\n'.join(ellipse_visualization))
-                    # print('\n')
-
-        # perform first median filter:
+        # Perform first median filter:
         # sort each node's velocities by x-component, then by y-component, and use the median
-        # element as the node's velocity
-        mesh_node_velocities_unsmoothed = np.array([
+        # element as the node's velocity.
+        mesh_velocities_unsmoothed = np.array([
             [
                 (
                     sorted(x_velocities)[len(x_velocities)//2],
@@ -143,20 +141,16 @@ class Frame:
                 if x_velocities else (0, 0)
                 for x_velocities, y_velocities in row
             ]
-            for row in mesh_node_nearby_feature_velocities
+            for row in mesh_nearby_feature_velocities
         ])
 
-        print(mesh_node_velocities_unsmoothed)
+        # Perform second median filter:
+        # replace each node's velocity with the median velocity of its neighbors.
+        # Note that the OpenCV implementation cannot not handle 2-channel images (like
+        # mesh_velocities_unsmoothed, which has channels for x- and y-velocities), which is why
+        # we use the SciPy implementation instead.
+        self.mesh_velocities = median_filter(mesh_velocities_unsmoothed, size=3)
 
-        # TODO perform second median filter: replace each node's velocity with the median velocity
-        # of its neighbors
-
-
-
-
-
-        # TODO match velocities to mesh nodes
-        # for each feature, inspect its coordinates to determine which nodes it applies to
 
     def _get_unstabilized_features_in_window(self, feature_detector, next_frame, window_left_x, window_top_y, window_width, window_height):
         '''
