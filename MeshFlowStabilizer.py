@@ -316,32 +316,6 @@ class MeshFlowStabilizer:
         return (early_features, late_features)
 
 
-def play_video(video, window_name):
-    '''
-    Play the given cv2.VideoCapture in a window with the given name.
-    '''
-
-    # get frame rate;
-    # adapted from https://learnopencv.com/how-to-find-frame-rate-or-frames-per-second-fps-in-opencv-python-cpp/
-    fps = video.get(cv2.CAP_PROP_FPS)
-    frame_length_ms = int(1000 / fps)
-
-    # read in video;
-    # adapted from https://www.geeksforgeeks.org/python-play-a-video-using-opencv/
-    while video.isOpened():
-        frame = _get_next_frame(video)
-        if frame is None:
-            print('video is done playing')
-            break
-        else:
-            cv2.imshow(window_name, frame.pixels_bgr)
-            # close window when q pressed; see https://stackoverflow.com/a/57691103
-            if cv2.waitKey(frame_length_ms) & 0xFF == ord('q'):
-                break
-
-    cv2.destroyAllWindows()
-
-
 def main():
     # TODO get video path from command line args
     input_path = 'videos/data_small-shaky-5.avi'
