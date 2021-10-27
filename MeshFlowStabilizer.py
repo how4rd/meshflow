@@ -13,7 +13,7 @@ class MeshFlowStabilizer:
     '''
 
     # How many rows and columns the mesh contains;
-    # note that there are (MESH_COL_COUNT + 1) nodes per row, and (MESH_COL_COUNT + 1) per column.
+    # note that there are (MESH_COL_COUNT + 1) vertices per row, and (MESH_COL_COUNT + 1) per column.
     MESH_COL_COUNT = 16
     MESH_ROW_COUNT = 16
 
@@ -22,7 +22,7 @@ class MeshFlowStabilizer:
     OUTLIER_SUBREGIONS_ROW_COUNT = 4
     OUTLIER_SUBREGIONS_COL_COUNT = 4
 
-    # The width and height of the ellipse drawn around each feature to match it with mesh nodes,
+    # The width and height of the ellipse drawn around each feature to match it with mesh vertices,
     # expressed in units of mesh rows and columns.
     FEATURE_ELLIPSE_WIDTH_MESH_COLS = 3
     FEATURE_ELLIPSE_HEIGHT_MESH_ROWS = 3
@@ -51,12 +51,22 @@ class MeshFlowStabilizer:
         video_height = int(unstabilized_video.get(cv2.CAP_PROP_FRAME_HEIGHT))
         video_num_frames = int(unstabilized_video.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        # homographies[t] contains the homography matrix between frame t and t+1;
-        # note that there are video_num_frames - 1 valid values for t:
+        # homographies[frame_index] contains the homography matrix between
+        # frames frame_index and frame_index+1;
+        # note that there are video_num_frames - 1 valid values for frame_index:
         # 0, ..., video_num_frames - 2 (the first frame to the second-to-last frame)
         homographies = np.empty(
             (video_num_frames - 1, self.HOMOGRAPHY_MATRIX_NUM_ROWS, self.HOMOGRAPHY_MATRIX_NUM_COLS)
         )
+
+        # vertex_profiles_by_frame_index[frame_index][row][col] contains the x- and y- velocity of
+        # the vertex at the given row and col during the given frame_index
+        # note that there are video_num_frames - 1 valid values for frame_index:
+        # 0, ..., video_num_frames - 2 (the first frame to the second-to-last frame)
+        vertex_profiles_by_frame_index = np.empty(
+            (video_num_frames - 1, self.MESH_ROW_COUNT + 1, self.MESH_COL_COUNT + 1, 2)
+        )
+
 
         # process the first frame (which has no previous frame)
         prev_frame = self._get_next_frame(unstabilized_video)
@@ -65,11 +75,11 @@ class MeshFlowStabilizer:
         frames = [prev_frame]
 
         # process all subsequent frames (which do have previous frames)
-        for frame_number in range(1, video_num_frames):
+        for frame_index in range(1, video_num_frames):
             current_frame = self._get_next_frame(unstabilized_video)
             if current_frame is None:
                 raise IOError(
-                    f'Video at <{input_path}> did not have frame {frame_number} of '
+                    f'Video at <{input_path}> did not have frame {frame_index} of '
                     f'{video_num_frames} (indexed from 0).'
                 )
             frames.append(current_frame)
@@ -81,9 +91,10 @@ class MeshFlowStabilizer:
                 prev_frame.pixels_bgr, current_frame.pixels_bgr
             )
             homography, _ = cv2.findHomography(prev_features, current_features)
-            homographies[frame_number - 1] = homography
+            homographies[frame_index - 1] = homography
 
             prev_frame.mesh_residual_velocities = self._get_mesh_residual_velocities(prev_frame, current_frame, homography)
+            vertex_profiles_by_frame_index[frame_index - 1] = prev_frame.mesh_residual_velocities
 
             prev_frame = current_frame
 
@@ -108,16 +119,16 @@ class MeshFlowStabilizer:
         Given two adjacent Frames (the "early" and "late" Frames) and a homography to apply to the
         late Frame,
         estimate the residual velocities (the remaining velocity after the homography has been
-        applied) of the nodes in the early Frame.
+        applied) of the vertices in the early Frame.
         Return the result as a (MESH_COL_COUNT + 1) by (MESH_ROW_COUNT + 1) by 2 array containing
-        the x- and y-velocity of each node in the early Frame relative to the late Frame.
+        the x- and y-velocity of each vertex in the early Frame relative to the late Frame.
         '''
 
         mesh_nearby_feature_velocities = self._get_mesh_nearby_feature_velocities(early_frame, late_frame, homography)
 
         # Perform first median filter:
-        # sort each node's velocities by x-component, then by y-component, and use the median
-        # element as the node's velocity.
+        # sort each vertex's velocities by x-component, then by y-component, and use the median
+        # element as the vertex's velocity.
         mesh_residual_velocities_unsmoothed = np.array([
             [
                 (
@@ -131,7 +142,7 @@ class MeshFlowStabilizer:
         ])
 
         # Perform second median filter:
-        # replace each node's velocity with the median velocity of its neighbors.
+        # replace each vertex's velocity with the median velocity of its neighbors.
         # Note that the OpenCV implementation cannot not handle 2-channel images (like
         # mesh_residual_velocities_unsmoothed, which has channels for x- and y-velocities),
         # which is why we use the SciPy implementation instead.
@@ -143,11 +154,11 @@ class MeshFlowStabilizer:
         Helper function for _get_mesh_residual_velocities.
         Given two adjacent Frames (the "early" and "late" Frames) and a homography to apply to the
         late Frame,
-        return a list that maps each node in the mesh to the residual velocities of its nearby
+        return a list that maps each vertex in the mesh to the residual velocities of its nearby
         features.
         Specifically, the output of this function is a list mesh_nearby_feature_velocities where
         mesh_nearby_feature_velocities[row][col] contains a tuple (x_velocities, y_velocities)
-        containing all the x- and y-velocities of features nearby the node at the given row and
+        containing all the x- and y-velocities of features nearby the vertex at the given row and
         column.
         '''
 
@@ -187,7 +198,7 @@ class MeshFlowStabilizer:
         incomplete list mesh_nearby_feature_velocities of the sort outputted by
         _get_mesh_nearby_feature_velocities,
         update mesh_nearby_feature_velocities so it contains the velocities of features nearby mesh
-        nodes in the window, assuming the given homography has been applied to the
+        vertices in the window, assuming the given homography has been applied to the
         '''
 
         # gather features
@@ -207,7 +218,7 @@ class MeshFlowStabilizer:
         current_window_velocities = late_window_feature_positions - early_window_feature_positions
         current_window_positions_velocities = np.c_[early_window_feature_positions, current_window_velocities]
 
-        # apply features' velocities to nearby mesh nodes
+        # apply features' velocities to nearby mesh vertices
         for feature_position_and_velocity in current_window_positions_velocities:
             feature_x, feature_y, feature_x_velocity, feature_y_velocity = feature_position_and_velocity[0]
             feature_row = (feature_y / frame_height) * self.MESH_ROW_COUNT
@@ -216,24 +227,24 @@ class MeshFlowStabilizer:
             # Draw an ellipse around each feature
             # of width self.FEATURE_ELLIPSE_WIDTH_MESH_COLS
             # and height self.FEATURE_ELLIPSE_HEIGHT_MESH_ROWS,
-            # and apply the feature's velocity to all mesh nodes that fall within this
+            # and apply the feature's velocity to all mesh vertices that fall within this
             # ellipse.
             # To do this, we can iterate through all the rows that the ellipse covers.
             # For each row, we can use the equation for an ellipse centered on the
             # feature to determine which columns the ellipse covers. The resulting
-            # (row, column) pairs correspond to the nodes in the ellipse.
+            # (row, column) pairs correspond to the vertices in the ellipse.
             ellipse_top_row_inclusive = max(0, math.ceil(feature_row - self.FEATURE_ELLIPSE_HEIGHT_MESH_ROWS / 2))
             ellipse_bottom_row_exclusive = 1 + min(self.MESH_ROW_COUNT, math.floor(feature_row + self.FEATURE_ELLIPSE_HEIGHT_MESH_ROWS / 2))
 
-            for node_row in range(ellipse_top_row_inclusive, ellipse_bottom_row_exclusive):
+            for vertex_row in range(ellipse_top_row_inclusive, ellipse_bottom_row_exclusive):
                 # half-width derived from ellipse equation
-                ellipse_slice_half_width = self.FEATURE_ELLIPSE_WIDTH_MESH_COLS * math.sqrt((1/4) - ((node_row - feature_row) / self.FEATURE_ELLIPSE_HEIGHT_MESH_ROWS) ** 2)
+                ellipse_slice_half_width = self.FEATURE_ELLIPSE_WIDTH_MESH_COLS * math.sqrt((1/4) - ((vertex_row - feature_row) / self.FEATURE_ELLIPSE_HEIGHT_MESH_ROWS) ** 2)
                 ellipse_left_col_inclusive = max(0, math.ceil(feature_col - ellipse_slice_half_width))
                 ellipse_right_col_exclusive = 1 + min(self.MESH_COL_COUNT, math.floor(feature_col + ellipse_slice_half_width))
 
-                for node_col in range(ellipse_left_col_inclusive, ellipse_right_col_exclusive):
-                    mesh_nearby_feature_velocities[node_row][node_col][0].append(feature_x_velocity)
-                    mesh_nearby_feature_velocities[node_row][node_col][1].append(feature_y_velocity)
+                for vertex_col in range(ellipse_left_col_inclusive, ellipse_right_col_exclusive):
+                    mesh_nearby_feature_velocities[vertex_row][vertex_col][0].append(feature_x_velocity)
+                    mesh_nearby_feature_velocities[vertex_row][vertex_col][1].append(feature_y_velocity)
 
 
     def _get_positions_with_homography_applied(self, positions, homography):
