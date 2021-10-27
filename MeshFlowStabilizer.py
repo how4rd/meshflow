@@ -31,9 +31,6 @@ class MeshFlowStabilizer:
     # perform a homography
     HOMOGRAPHY_MIN_NUMBER_CORRESPONDING_FEATURES = 4
 
-    # the max number of frames to store in the frame buffer
-    FRAME_BUFFER_MAX_LENGTH = 40
-
 
     def __init__(self):
         self.feature_detector = cv2.FastFeatureDetector_create()
@@ -46,17 +43,24 @@ class MeshFlowStabilizer:
         '''
 
         unstabilized_video = cv2.VideoCapture(input_path)
+        # get video properties; see https://stackoverflow.com/a/39953739
+        video_width = int(unstabilized_video.get(cv2.CAP_PROP_FRAME_WIDTH))
+        video_height = int(unstabilized_video.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        video_time = int(unstabilized_video.get(cv2.CAP_PROP_FRAME_COUNT))
 
+        # process the first frame (which has no previous frame)
         prev_frame = self._get_next_frame(unstabilized_video)
         if prev_frame is None:
             raise IOError(f'Video at <{input_path}> does not contain any frames.')
-        frame_buffer = deque([prev_frame], maxlen=self.FRAME_BUFFER_MAX_LENGTH)
+        frames = [prev_frame]
 
-        while unstabilized_video.isOpened():
+        # process all subsequent frames (which do have previous frames)
+        for frame_number in range(video_time-1):
             current_frame = self._get_next_frame(unstabilized_video)
             if current_frame is None:
-                break
-            frame_buffer.append(current_frame)
+                raise IOError(
+                    f'Video at <{input_path}> did not have frame {frame_number+1}/{video_time}.')
+            frames.append(current_frame)
 
             prev_frame.mesh_velocities = self._get_mesh_velocities(prev_frame, current_frame)
             prev_frame = current_frame
