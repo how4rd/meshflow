@@ -9,7 +9,7 @@ class Frame:
         containing the x - and y-velocity of each node relative to the next Frame.
     '''
 
-    __slots__ = ('pixels_bgr', 'mesh_velocities')
+    __slots__ = ('pixels_bgr', 'mesh_residual_velocities')
 
     def __init__(self, pixels_bgr):
         self.pixels_bgr = pixels_bgr

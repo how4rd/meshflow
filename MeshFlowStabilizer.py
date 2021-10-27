@@ -31,6 +31,9 @@ class MeshFlowStabilizer:
     # perform a homography
     HOMOGRAPHY_MIN_NUMBER_CORRESPONDING_FEATURES = 4
 
+    # the dimensions of a homography matrix
+    HOMOGRAPHY_MATRIX_NUM_ROWS = 3
+    HOMOGRAPHY_MATRIX_NUM_COLS = 3
 
     def __init__(self):
         self.feature_detector = cv2.FastFeatureDetector_create()
@@ -46,7 +49,14 @@ class MeshFlowStabilizer:
         # get video properties; see https://stackoverflow.com/a/39953739
         video_width = int(unstabilized_video.get(cv2.CAP_PROP_FRAME_WIDTH))
         video_height = int(unstabilized_video.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        video_time = int(unstabilized_video.get(cv2.CAP_PROP_FRAME_COUNT))
+        video_num_frames = int(unstabilized_video.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        # homographies[t] contains the homography matrix between frame t and t+1;
+        # note that there are video_num_frames - 1 valid values for t:
+        # 0, ..., video_num_frames - 2 (the first frame to the second-to-last frame)
+        homographies = np.empty(
+            (video_num_frames - 1, self.HOMOGRAPHY_MATRIX_NUM_ROWS, self.HOMOGRAPHY_MATRIX_NUM_COLS)
+        )
 
         # process the first frame (which has no previous frame)
         prev_frame = self._get_next_frame(unstabilized_video)
@@ -55,14 +65,26 @@ class MeshFlowStabilizer:
         frames = [prev_frame]
 
         # process all subsequent frames (which do have previous frames)
-        for frame_number in range(video_time-1):
+        for frame_number in range(1, video_num_frames):
             current_frame = self._get_next_frame(unstabilized_video)
             if current_frame is None:
                 raise IOError(
-                    f'Video at <{input_path}> did not have frame {frame_number+1}/{video_time}.')
+                    f'Video at <{input_path}> did not have frame {frame_number} of '
+                    f'{video_num_frames} (indexed from 0).'
+                )
             frames.append(current_frame)
 
-            prev_frame.mesh_velocities = self._get_mesh_velocities(prev_frame, current_frame)
+            # calculcate homography between prev and current frames;
+            # when calculating unstabilized velocities and performing the optimization, we assume
+            # the homography has been applied already and only calculate residual velocities
+            prev_features, current_features = self._get_all_matched_features_between_images(
+                prev_frame.pixels_bgr, current_frame.pixels_bgr
+            )
+            homography, _ = cv2.findHomography(prev_features, current_features)
+            homographies[frame_number - 1] = homography
+
+            prev_frame.mesh_residual_velocities = self._get_mesh_residual_velocities(prev_frame, current_frame, homography)
+
             prev_frame = current_frame
 
         unstabilized_video.release()
@@ -81,26 +103,28 @@ class MeshFlowStabilizer:
         return Frame(pixels_bgr)
 
 
-    def _get_mesh_velocities(self, early_frame, late_frame):
+    def _get_mesh_residual_velocities(self, early_frame, late_frame, homography):
         '''
-        Given two adjacent Frames (the "early" and "late" Frames), estimate the velocity of
-        the nodes in the early Frame.
+        Given two adjacent Frames (the "early" and "late" Frames) and a homography to apply to the
+        late Frame,
+        estimate the residual velocities (the remaining velocity after the homography has been
+        applied) of the nodes in the early Frame.
         Return the result as a (MESH_COL_COUNT + 1) by (MESH_ROW_COUNT + 1) by 2 array containing
         the x- and y-velocity of each node in the early Frame relative to the late Frame.
         '''
 
-        mesh_nearby_feature_velocities = self._get_mesh_nearby_feature_velocities(early_frame, late_frame)
+        mesh_nearby_feature_velocities = self._get_mesh_nearby_feature_velocities(early_frame, late_frame, homography)
 
         # Perform first median filter:
         # sort each node's velocities by x-component, then by y-component, and use the median
         # element as the node's velocity.
-        mesh_velocities_unsmoothed = np.array([
+        mesh_residual_velocities_unsmoothed = np.array([
             [
                 (
                     sorted(x_velocities)[len(x_velocities)//2],
                     sorted(y_velocities)[len(y_velocities)//2]
                 )
-                if x_velocities else (0, 0)  # TODO replace with homography's velocity
+                if x_velocities else (0, 0)
                 for x_velocities, y_velocities in row
             ]
             for row in mesh_nearby_feature_velocities
@@ -109,16 +133,18 @@ class MeshFlowStabilizer:
         # Perform second median filter:
         # replace each node's velocity with the median velocity of its neighbors.
         # Note that the OpenCV implementation cannot not handle 2-channel images (like
-        # mesh_velocities_unsmoothed, which has channels for x- and y-velocities), which is why
-        # we use the SciPy implementation instead.
-        return median_filter(mesh_velocities_unsmoothed, size=3)
+        # mesh_residual_velocities_unsmoothed, which has channels for x- and y-velocities),
+        # which is why we use the SciPy implementation instead.
+        return median_filter(mesh_residual_velocities_unsmoothed, size=3)
 
 
-    def _get_mesh_nearby_feature_velocities(self, early_frame, late_frame):
+    def _get_mesh_nearby_feature_velocities(self, early_frame, late_frame, homography):
         '''
-        Helper function for _get_mesh_velocities.
-        Given two adjacent Frames (the "early" and "late" Frames), return a list that maps each
-        node in the mesh to the velocities of its nearby features.
+        Helper function for _get_mesh_residual_velocities.
+        Given two adjacent Frames (the "early" and "late" Frames) and a homography to apply to the
+        late Frame,
+        return a list that maps each node in the mesh to the residual velocities of its nearby
+        features.
         Specifically, the output of this function is a list mesh_nearby_feature_velocities where
         mesh_nearby_feature_velocities[row][col] contains a tuple (x_velocities, y_velocities)
         containing all the x- and y-velocities of features nearby the node at the given row and
@@ -145,30 +171,36 @@ class MeshFlowStabilizer:
 
                 self._place_window_feature_velocities_into_list(
                     early_window, late_window, window_offset, frame_width, frame_height,
+                    homography,
                     mesh_nearby_feature_velocities
                 )
 
         return mesh_nearby_feature_velocities
 
 
-    def _place_window_feature_velocities_into_list(self, early_window, late_window, window_offset, frame_width, frame_height, mesh_nearby_feature_velocities):
+    def _place_window_feature_velocities_into_list(self, early_window, late_window, window_offset, frame_width, frame_height, homography, mesh_nearby_feature_velocities):
         '''
         Helper function for _get_mesh_nearby_feature_velocities.
-        Given windows into two adjacent frames (subsections of the "early" and "late" Frames'
+        Given windows into two adjacent Frames (subsections of the "early" and "late" Frames'
         pixels), the offset location (position of top left corner) of those windows within their
-        original Frames, the Frame's dimensions, and an incomplete list
-        mesh_nearby_feature_velocities of the sort outputted by _get_mesh_nearby_feature_velocities,
+        original Frames, the Frame's dimensions, a homography to apply to the late Frame, and an
+        incomplete list mesh_nearby_feature_velocities of the sort outputted by
+        _get_mesh_nearby_feature_velocities,
         update mesh_nearby_feature_velocities so it contains the velocities of features nearby mesh
-        nodes in the window.
+        nodes in the window, assuming the given homography has been applied to the
         '''
 
         # gather features
-        early_window_feature_positions, late_window_feature_positions = self._get_feature_positions_in_window(
+        early_window_feature_positions, late_window_feature_positions_no_homography = self._get_feature_positions_in_window(
             early_window, late_window, window_offset
         )
 
         if early_window_feature_positions is None:
             return
+
+        late_window_feature_positions = self._get_positions_with_homography_applied(
+            late_window_feature_positions_no_homography, homography
+        )
 
         # calculate features' velocities; see https://stackoverflow.com/a/44409124 for
         # combining the positions and velocities into one matrix
@@ -204,6 +236,17 @@ class MeshFlowStabilizer:
                     mesh_nearby_feature_velocities[node_row][node_col][1].append(feature_y_velocity)
 
 
+    def _get_positions_with_homography_applied(self, positions, homography):
+        '''
+        Given a CV_32FC2 array of positions and a homography matrix,
+        return a copy of the positions where each has had the homography applied.
+        '''
+
+
+        positions_reshaped = positions.reshape(-1, 1, 2).astype(np.float32)
+        return cv2.perspectiveTransform(positions_reshaped, homography)
+
+
     def _get_feature_positions_in_window(self, early_window, late_window, window_offset):
         '''
         Helper function for _place_window_feature_velocities_into_list.
@@ -216,33 +259,16 @@ class MeshFlowStabilizer:
         successfully tracked into the late Frame, and late_features contains those features'
         coordinates in the late Frame.
 
-        If not enough features to perform a homography are found, return `(None, None)`.
+        If not enough features to perform a homography are found, return (None, None).
         '''
 
-        # find all features in both windows
-
-        # early_features is an CV_32FC2 array containing the coordinates of each keypoint;
-        # see https://stackoverflow.com/a/55398871 and https://stackoverflow.com/a/47617999
-        early_keypoints = self.feature_detector.detect(early_window)
-        if len(early_keypoints) < self.HOMOGRAPHY_MIN_NUMBER_CORRESPONDING_FEATURES:
+        # gather all features that track between frames
+        early_features_including_outliers, late_features_including_outliers = self._get_all_matched_features_between_images(early_window, late_window)
+        if early_features_including_outliers is None:
             return (None, None)
-        early_features_including_unmatched_and_outliers = np.float32(
-            cv2.KeyPoint_convert(early_keypoints)[:, np.newaxis, :]
-        )
-        late_features_including_unmatched_and_outliers, matched_features, _ = cv2.calcOpticalFlowPyrLK(
-            early_window, late_window, early_features_including_unmatched_and_outliers, None
-        )
 
-        # eliminate features that weren't matched between windows
-
-        matched_features_mask = matched_features.flatten().astype(dtype=bool)
-        early_features_including_outliers = early_features_including_unmatched_and_outliers[matched_features_mask]
-        late_features_including_outliers = late_features_including_unmatched_and_outliers[matched_features_mask]
-        if len(early_features_including_outliers) < self.HOMOGRAPHY_MIN_NUMBER_CORRESPONDING_FEATURES:
-            return (None, None)
 
         # eliminate outlying features using RANSAC
-
         _, outlier_features = cv2.findHomography(
             early_features_including_outliers, late_features_including_outliers, method=cv2.RANSAC
         )
@@ -253,6 +279,41 @@ class MeshFlowStabilizer:
         # Add a constant offset to feature coordinates to express them
         # relative to the original window's top left corner, not the window's
         return (early_features + window_offset, late_features + window_offset)
+
+
+    def _get_all_matched_features_between_images(self, early_window, late_window):
+        '''
+        Helper function.
+        Given windows into two adjacent Frames (subsections of the "early" and "late" Frames'
+        pixels), detect features in the early window using the MeshFlowStabilizer's feature_detector
+        and track them into the late window using cv2.calcOpticalFlowPyrLK.
+        Return a tuple
+        (early_features, late_features)
+        with the positions of the early and late Frames' features relative to the window as a
+        CV_32FC2 array, or
+        (None, None)
+        if fewer than self.HOMOGRAPHY_MIN_NUMBER_CORRESPONDING_FEATURES such features are found.
+        '''
+
+        # convert a KeyPoint list into a CV_32FC2 array containing the coordinates of each KeyPoint;
+        # see https://stackoverflow.com/a/55398871 and https://stackoverflow.com/a/47617999
+        early_keypoints = self.feature_detector.detect(early_window)
+        if len(early_keypoints) < self.HOMOGRAPHY_MIN_NUMBER_CORRESPONDING_FEATURES:
+            return (None, None)
+
+        early_features_including_unmatched = np.float32(cv2.KeyPoint_convert(early_keypoints)[:, np.newaxis, :])
+        late_features_including_unmatched, matched_features, _ = cv2.calcOpticalFlowPyrLK(
+            early_window, late_window, early_features_including_unmatched, None
+        )
+
+        matched_features_mask = matched_features.flatten().astype(dtype=bool)
+        early_features = early_features_including_unmatched[matched_features_mask]
+        late_features = late_features_including_unmatched[matched_features_mask]
+
+        if len(early_features) < self.HOMOGRAPHY_MIN_NUMBER_CORRESPONDING_FEATURES:
+            return (None, None)
+
+        return (early_features, late_features)
 
 
 def play_video(video, window_name):
