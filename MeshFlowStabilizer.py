@@ -6,6 +6,11 @@ from scipy.ndimage import median_filter
 
 from Frame import Frame
 
+
+import sys
+np.set_printoptions(threshold=sys.maxsize)
+
+
 class MeshFlowStabilizer:
     '''
     A MeshFlowStabilizer stabilizes videos using the MeshFlow algorithm outlined in
@@ -35,8 +40,159 @@ class MeshFlowStabilizer:
     HOMOGRAPHY_MATRIX_NUM_ROWS = 3
     HOMOGRAPHY_MATRIX_NUM_COLS = 3
 
+    # In the energy function used to smooth the image, the number of frames to inspect both before
+    # and after each frame when computing that frame's regularization term. As a result, the
+    # regularization term involved a sum over up to 2 * TEMPORAL_SMOOTHING_RADIUS frame indexes.
+    # This constnat is denoted as \Omega_t in the original paper.
+    TEMPORAL_SMOOTHING_RADIUS = 10
+
+    # the number of iterations of the Jacobi method to perform when minimizing the energy function.
+    OPTIMIZATION_NUM_ITERATIONS = 100
+
     def __init__(self):
         self.feature_detector = cv2.FastFeatureDetector_create()
+
+
+    def _get_stabilized_residual_displacements(self, homographies, video_num_frames, vertex_unstabilized_residual_displacements_by_frame_index):
+        '''
+        Given an array of homographies between adjacent Frames in the unstabilized video, the number
+        of frames in the video, and an
+        array of each mesh vertex's residual displacement at each Frame in the unstabilized video,
+        return a new array of each vertex's residual displacement at each Frame in the stabilized
+        video.
+
+        It does so by finding residual displacements that minimize an energy function.
+        The function takes residual displacements as input and outputs a number corresponding to how
+        how shaky the input is.
+
+        Specifically, the output array of stabilized residual displacements is calculated using the
+        Jacobi method (see https://en.wikipedia.org/w/index.php?oldid=1036645158).
+        For each mesh vertex, the method solves the equation
+        A p = b
+        for vector p,
+        where entry p[i] contains the vertex's stabilized residual displacement at frame i.
+        The entries in matrix A and vector b were computed by finding the partial derivative of the
+        energy function with respect to each p[i] and setting them all to 0. Thus, solving for p in
+        A p = b results in residual displacements that produce a local extremum (which we can safely
+        assume is a local minimum) in the energy function.
+        '''
+
+        # row_indexes[row][col] = row, col_indexes[row][col] = col
+        row_indexes, col_indexes = np.indices((video_num_frames, video_num_frames))
+
+        # regularization_weights[t, r] is a weight constant applied to the regularization term.
+        # In the paper, regularization_weights[t, r] is denoted as w_{t,r}.
+        regularization_weights = np.exp(
+            -np.square((3 / self.TEMPORAL_SMOOTHING_RADIUS) * (row_indexes - col_indexes))
+        )
+
+        # adaptive_weights[t] is a weight, derived from properties of the frames, applied to the
+        # regularization term corresponding to the frame at index t
+        # Note that the paper does not specify the weight to apply to the last frame (which does not
+        # have a velocity), so we assume it is the same as the second-to-last frame.
+        # In the paper, adaptive_weights[t] is denoted as \lambda_{t}.
+        # TODO calculate based on homographies
+        adaptive_weights = np.array([i/100 for i in range(video_num_frames)])
+
+        # adaptive_weights = np.empty((video_num_frames,))
+        # homography_affine_components = homographies.copy()
+        # homography_affine_components[:, 2, :] = [0, 0, 1]
+        # # eigenvalue_ratios[i] is the ratio of the two greatest eigenvalues for the matrix
+        # # homography_affine_components[i];
+        # # see https://stackoverflow.com/a/24395100
+        # def test(x):
+        #     print(x)
+        #     print('has eigenvalues')
+        #     eigenvalues = np.linalg.eigvals(x)
+        #     print(eigenvalues)
+        #     return eigenvalues
+        # eigenvalue_ratios = np.array([
+        #     test(matrix)
+        #     for matrix in homography_affine_components
+        # ])
+        # # print(f'homography_affine_components (shape: {homography_affine_components.shape}):')
+        # # print(homography_affine_components)
+        # # eigenvalues = np.apply_along_axis(test, 1, homography_affine_components)
+        # # print(f'eigenvalues (shape: {eigenvalues.shape}):')
+        # # print(eigenvalue_ratios.shape)
+
+        # off_diagonal_coefficients[t, r] is a coefficient derived from the regularization_weights and
+        # adaptive_weights that appears in the partial derivatives of the energy function.
+        # Using the paper's notation, off_diagonal_coefficients[t, r] is denoted as
+        # \lambda_r w_{r, t} - \lambda_t w_{t, r}.
+        # print(f'np.diag(adaptive_weights) (shape: {np.diag(adaptive_weights).shape}):')
+        # print(np.diag(adaptive_weights))
+        # print(f'regularization_weights (shape: {regularization_weights.shape}):')
+        # print(regularization_weights)
+        combined_adaptive_regularization_weights = np.matmul(np.diag(adaptive_weights), regularization_weights)
+        # print(f'combined_adaptive_regularization_weights (shape: {combined_adaptive_regularization_weights.shape}')
+        # print(combined_adaptive_regularization_weights)
+        off_diagonal_coefficients = np.transpose(combined_adaptive_regularization_weights) - combined_adaptive_regularization_weights
+        # print(f'off_diagonal_coefficients (shape: {off_diagonal_coefficients.shape}):')
+        # print(off_diagonal_coefficients)
+
+        # on_diagonal_coefficients is a diagonal matrix where on_diagonal_coefficients[t, t] contains a
+        # coefficient that appears in partial derivatives of the energy function.
+        # Using the paper's notation, on_diagonal_coefficients[t, t] is denoted as
+        # 1 / \left(1 + \sum_{r \in \Omega_t, r \neq t} \left( \lambda_t w_{t, r} - \lambda_r w_{r, t} \right) \right)
+        on_diagonal_coefficients = np.diag(np.reciprocal(1 - np.sum(off_diagonal_coefficients, axis=1)))
+        # print(f'on_diagonal_coefficients (shape: {on_diagonal_coefficients.shape})')
+        # print(on_diagonal_coefficients)
+
+        # vertex_unstabilized_residual_displacements_by_frame_index is indexed by
+        # frame_index, then row, then col, then velocity component.
+        # Instead, vertex_unstabilized_residual_displacements_by_coord is indexed by
+        # row, then col, then frame_index, then velocity component;
+        # this rearrangement should allow for faster access during the optimization step.
+        print('vertex_unstabilized_residual_displacements_by_frame_index has shape', vertex_unstabilized_residual_displacements_by_frame_index.shape)
+        vertex_unstabilized_residual_displacements_by_coord = np.moveaxis(
+            vertex_unstabilized_residual_displacements_by_frame_index, 0, 2
+        )
+        print('vertex_unstabilized_residual_x_displacements_by_coord has shape', vertex_unstabilized_residual_displacements_by_coord.shape)
+        # TODO parallelize
+        for mesh_row in range(self.MESH_ROW_COUNT + 1):
+            for mesh_col in range(self.MESH_COL_COUNT + 1):
+                print(f'vertex ({mesh_row}, {mesh_col}):')
+                vertex_unstabilized_residual_displacements = vertex_unstabilized_residual_displacements_by_coord[mesh_row][mesh_col]
+                print('unstabilized:')
+                print(vertex_unstabilized_residual_displacements)
+                vertex_stabilized_residual_displacements = self._get_jacobi_method_output(
+                    off_diagonal_coefficients, on_diagonal_coefficients,
+                    vertex_unstabilized_residual_displacements,
+                    vertex_unstabilized_residual_displacements
+                )
+                print('stabilized:')
+                print(vertex_stabilized_residual_displacements)
+
+
+    def _get_jacobi_method_output(self, off_diagonal_coefficients, on_diagonal_coefficients, x_start, b):
+        '''
+        Helper function for _get_stabilized_residual_displacements.
+        Approximate a solution for the vector x in the equation
+        A x = b
+        where A is a matrix of constants and b is a vector of constants.
+        Return a value of x after performing self.OPTIMIZATION_NUM_ITERATIONS of the Jacobi method.
+        The matrices on_diagonal_coefficients (which is a diagonal matrix) and
+        off_diagonal_coefficients specify the entries of A.
+        The on-diagonal entry of A at row i, col i is given by on_diagonal_coefficients[i, i],
+        and the off-diagonal entry of A at row i, col j is given by on_diagonal_coefficients[i, j].
+        An initial estimate for x is given by x_start.
+        '''
+
+        x = x_start.copy()
+
+        for i in range(self.OPTIMIZATION_NUM_ITERATIONS):
+            # print(f'\titeration {i}')
+            # print('\t\off_diagonal_coefficients.shape:', off_diagonal_coefficients.shape)
+            # print('\t\tx.shape:', x.shape)
+            # print('\t\tproduct.shape', np.matmul(off_diagonal_coefficients, x).shape)
+            # print('\t\tb.shape:', b.shape)
+            # print('\t\tsum.shape:', (b + np.matmul(off_diagonal_coefficients, x)).shape)
+            # print('\t\ton_diagonal_coefficients.shape:', on_diagonal_coefficients.shape)
+            # print('\t\tproduct shape:', np.matmul(on_diagonal_coefficients, b + np.matmul(off_diagonal_coefficients, x)).shape)
+            x = np.matmul(on_diagonal_coefficients, b + np.matmul(off_diagonal_coefficients, x))
+
+        return x
 
 
     def stabilize(self, input_path, output_path):
@@ -52,29 +208,39 @@ class MeshFlowStabilizer:
         video_num_frames = int(unstabilized_video.get(cv2.CAP_PROP_FRAME_COUNT))
 
         # homographies[frame_index] contains the homography matrix between
-        # frames frame_index and frame_index+1;
-        # note that there are video_num_frames - 1 valid values for frame_index:
+        # frames frame_index and frame_index+1.
+        # Note that there are video_num_frames - 1 valid values for frame_index:
         # 0, ..., video_num_frames - 2 (the first frame to the second-to-last frame)
         homographies = np.empty(
             (video_num_frames - 1, self.HOMOGRAPHY_MATRIX_NUM_ROWS, self.HOMOGRAPHY_MATRIX_NUM_COLS)
         )
 
-        # vertex_profiles_by_frame_index[frame_index][row][col] contains the x- and y- velocity of
-        # the vertex at the given row and col during the given frame_index
-        # note that there are video_num_frames - 1 valid values for frame_index:
+        # vertex_residual_velocities_by_frame_index[frame_index][row][col] contains the x- and y-
+        # components of the residual velocity (velocity in addition to global velocity imposed by
+        # frame-to-frame homographies) of the vertex at the given row and col during the given
+        # frame_index.
+        # Note that there are video_num_frames - 1 valid values for frame_index:
         # 0, ..., video_num_frames - 2 (the first frame to the second-to-last frame)
-        vertex_profiles_by_frame_index = np.empty(
+        vertex_residual_velocities_by_frame_index = np.empty(
             (video_num_frames - 1, self.MESH_ROW_COUNT + 1, self.MESH_COL_COUNT + 1, 2)
         )
 
+        # vertex_unstabilized_positions_by_frame_index[frame_index][row][col] contains the x- and
+        # y- components of the residual displacement (displacement in addition to global
+        # displacement imposed by frame-to-frame homographies) of the vertex at the given row and
+        # col accumulated from frames 0 to frame_index, both inclusive.
+        vertex_unstabilized_residual_displacements_by_frame_index = np.empty(
+            (video_num_frames, self.MESH_ROW_COUNT + 1, self.MESH_COL_COUNT + 1, 2)
+        )
 
         # process the first frame (which has no previous frame)
         prev_frame = self._get_next_frame(unstabilized_video)
         if prev_frame is None:
             raise IOError(f'Video at <{input_path}> does not contain any frames.')
         frames = [prev_frame]
+        vertex_unstabilized_residual_displacements_by_frame_index[0].fill(0)
 
-        # process all subsequent frames (which do have previous frames)
+        # process all subsequent frames (which do have a previous frame)
         for frame_index in range(1, video_num_frames):
             current_frame = self._get_next_frame(unstabilized_video)
             if current_frame is None:
@@ -91,13 +257,15 @@ class MeshFlowStabilizer:
                 prev_frame.pixels_bgr, current_frame.pixels_bgr
             )
             homography, _ = cv2.findHomography(prev_features, current_features)
-            homographies[frame_index - 1] = homography
+            homographies[frame_index-1] = homography
 
             prev_frame.mesh_residual_velocities = self._get_mesh_residual_velocities(prev_frame, current_frame, homography)
-            vertex_profiles_by_frame_index[frame_index - 1] = prev_frame.mesh_residual_velocities
+            vertex_residual_velocities_by_frame_index[frame_index-1] = prev_frame.mesh_residual_velocities
+            vertex_unstabilized_residual_displacements_by_frame_index[frame_index] = vertex_unstabilized_residual_displacements_by_frame_index[frame_index-1] + vertex_residual_velocities_by_frame_index[frame_index-1]
 
             prev_frame = current_frame
 
+        self._get_stabilized_residual_displacements(homographies, video_num_frames, vertex_unstabilized_residual_displacements_by_frame_index)
         unstabilized_video.release()
 
 
