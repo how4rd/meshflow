@@ -136,8 +136,7 @@ class MeshFlowStabilizer:
         # process the first frame (which has no previous frame)
         prev_frame = self._get_next_frame(unstabilized_video)
         if prev_frame is None:
-            raise IOError(
-                f'Video at <{input_path}> does not contain any frames.')
+            raise IOError(f'Video at <{input_path}> does not contain any frames.')
         unstabilized_frames = [prev_frame]
         vertex_unstabilized_residual_displacements_by_frame_index[0].fill(0)
         homographies[0] = np.identity(3)
@@ -549,7 +548,7 @@ class MeshFlowStabilizer:
         # have a velocity), so we assume it is the same as the second-to-last frame.
         # In the paper, adaptive_weights[t] is denoted as \lambda_{t}.
         # TODO calculate based on homographies
-        adaptive_weights = np.array([i/100 for i in range(num_frames)])
+        adaptive_weights = np.array([100 for i in range(num_frames)])
 
         # adaptive_weights = np.empty((num_frames,))
         # homography_affine_components = homographies.copy()
@@ -660,14 +659,6 @@ class MeshFlowStabilizer:
         x = x_start.copy()
 
         for _ in range(self.OPTIMIZATION_NUM_ITERATIONS):
-            # print(f'\titeration {i}')
-            # print('\t\off_diagonal_coefficients.shape:', off_diagonal_coefficients.shape)
-            # print('\t\tx.shape:', x.shape)
-            # print('\t\tproduct.shape', np.matmul(off_diagonal_coefficients, x).shape)
-            # print('\t\tb.shape:', b.shape)
-            # print('\t\tsum.shape:', (b + np.matmul(off_diagonal_coefficients, x)).shape)
-            # print('\t\ton_diagonal_coefficients.shape:', on_diagonal_coefficients.shape)
-            # print('\t\tproduct shape:', np.matmul(on_diagonal_coefficients, b + np.matmul(off_diagonal_coefficients, x)).shape)
             x = np.matmul(on_diagonal_coefficients, b + np.matmul(off_diagonal_coefficients, x))
 
         return x
@@ -715,6 +706,7 @@ class MeshFlowStabilizer:
             for row in range(self.MESH_COL_COUNT + 1)
             for col in range(self.MESH_ROW_COUNT + 1)
         ], dtype=np.float32)
+
         # row_col_to_unstabilized_vertex_x_y[row, col] and
         # row_col_to_stabilized_vertex_x_y[row, col]
         # contain the x and y positions of the vertex at the given row and col
@@ -735,57 +727,7 @@ class MeshFlowStabilizer:
             vertex_unstabilized_residual_displacements_by_frame_index,
             (num_frames, -1, 1, 2)
         )
-        print(
-            f'residual_velocity_diffs_by_frame_index (shape: {residual_velocity_diffs_by_frame_index.shape})')
-
-        # for frame_index, frame in enumerate(frames):
-        #     # Construct map from the stabilized frame to the unstabilized frame.
-        #     # If (x_u, y_u) in the unstabilized video should be (x_s, y_s) in the stabilized
-        #     # video, then map[x_s, y_s] = [x_u, y_u].
-        #     # map = np.moveaxis(np.indices((frame_width, frame_height)), 0, 2)
-        #     map = np.empty((frame_width, frame_height, 2), dtype=np.float32)
-
-        #     # print(f'map (shape: {map.shape}):')
-        #     # print(map)
-
-        #     # Apply the global velocity between the current and previous frame by applying the
-        #     # two frames' homography
-        #     print(f'prev_vertex_x_y (shape: {prev_vertex_x_y.shape}):')
-        #     print(prev_vertex_x_y)
-        #     current_vertex_x_y = cv2.perspectiveTransform(prev_vertex_x_y, homographies[frame_index])
-
-        #     # Apply the residual displacements. Its current displacements are given by
-        #     # vertex_unstabilized_residual_displacements, and the desired displacements are given by
-        #     # vertex_stabilized_residual_displacements, so adding the difference of the two
-        #     # transforms the frame as desired.
-        #     current_vertex_x_y += residual_velocity_diffs_by_frame_index[frame_index]
-
-        #     # current_vertex_x_y_by_row_and_col[row, col] contains the x and y positions of the vertex at
-        #     # the given row and col
-        #     current_vertex_x_y_by_row_and_col = np.reshape(current_vertex_x_y, (self.MESH_ROW_COUNT + 1, self.MESH_COL_COUNT + 1, 2))
-        #     # Look at each face of the mesh. Since we know the original and transformed coordinates
-        #     # of its four vertices, we can construct a homography to fill in the remaining pixels
-        #     # TODO parallelize
-        #     for cell_top_left_row in range(self.MESH_ROW_COUNT):
-        #         for cell_top_left_col in range(self.MESH_COL_COUNT):
-        #             prev_cell_bounds = prev_vertex_x_y_by_row_and_col[cell_top_left_row:cell_top_left_row+2, cell_top_left_col:cell_top_left_col+2].reshape(-1, 2)
-        #             current_cell_bounds = current_vertex_x_y_by_row_and_col[cell_top_left_row:cell_top_left_row+2, cell_top_left_col:cell_top_left_col+2].reshape(-1, 2)
-        #             current_cell_x_min,
-        #             print(f'prev_cell_bounds (shape: {prev_cell_bounds.shape})')
-        #             print(prev_cell_bounds)
-        #             print(f'current_cell_bounds (shape: {current_cell_bounds.shape})')
-        #             print(current_cell_bounds)
-        #             cell_homography = cv2.findHomography(prev_cell_bounds, current_cell_bounds)
-        #             print('cell homography:')
-        #             print(cell_homography)
-
-        #             mesh_cells = np.array(
-        #             [x, y] for y in range(current_cell_boun) for x in range()
-        #             )
-        #             # go through all the pixels in the range and assign them to the
-
-        #             # cell_bottom_left_row = cell
-        #         # print(cell)
+        print(f'residual_velocity_diffs_by_frame_index (shape: {residual_velocity_diffs_by_frame_index.shape})')
 
         stabilized_frames = []
         for frame_index, unstabilized_frame in enumerate(unstabilized_frames):
@@ -796,23 +738,14 @@ class MeshFlowStabilizer:
             # video, then
             # stabilized_y_x_to_unstabilized_x[y_s, x_s] = x_u, and
             # stabilized_y_x_to_unstabilized_y[y_s, x_s] = y_u.
-            # NOTE the flipped coordinates; while a little confusing at first, this allows us to
-            # index into map just like we index into the image. We transpose the result when we plug
-            # into cv2.remap, so at that point, map[x_s, y_s] = [x_u, y_u].
-            # map = np.moveaxis(np.indices((frame_width, frame_height)), 0, 2)
+            # NOTE the flipped coordinates, allowing us to index into map just like we index into
+            # the image.
 
             # frame_stabilized_y_x_to_unstabilized_y[y, x] = y, frame_stabilized_y_x_to_unstabilized_x[y, x] = x
-            frame_stabilized_y_x_to_unstabilized_y, frame_stabilized_y_x_to_unstabilized_x = np.indices(
-                (frame_height, frame_width))
+            frame_stabilized_y_x_to_unstabilized_y, frame_stabilized_y_x_to_unstabilized_x = np.indices((frame_height, frame_width))
 
-            frame_stabilized_y_x_to_stabilized_x_y = np.swapaxes(
-                np.indices((frame_width, frame_height), dtype=np.float32), 0, 2)
-            print('frame_stabilized_y_x_to_stabilized_x_y.shape:',
-                  frame_stabilized_y_x_to_stabilized_x_y.shape)
-            frame_stabilized_x_y = frame_stabilized_y_x_to_stabilized_x_y.reshape(
-                (-1, 1, 2))
-
-            # map = np.moveaxis(np.indices((frame_height, frame_width)), 0, 2)
+            frame_stabilized_y_x_to_stabilized_x_y = np.swapaxes(np.indices((frame_width, frame_height), dtype=np.float32), 0, 2)
+            frame_stabilized_x_y = frame_stabilized_y_x_to_stabilized_x_y.reshape((-1, 1, 2))
 
             # Determine the coordinates of the mesh vertices in the stabilized video.
             # Each coordinate undergoes a global homography (representing a global velocity)
@@ -837,69 +770,58 @@ class MeshFlowStabilizer:
                     # construct a homography representing this cell's warp and then apply it to
                     # the unstabilized cell (which is just a rectangle) to construct the stabilized
                     # cell.
-                    unstabilized_cell_bounds = row_col_to_unstabilized_vertex_x_y[
-                        cell_top_left_row:cell_top_left_row+2, cell_top_left_col:cell_top_left_col+2].reshape(-1, 2)
-                    stabilized_cell_bounds = row_col_to_stabilized_vertex_x_y[
-                        cell_top_left_row:cell_top_left_row+2, cell_top_left_col:cell_top_left_col+2].reshape(-1, 2)
-                    unstabilized_to_stabilized_homography, _ = cv2.findHomography(
-                        unstabilized_cell_bounds, stabilized_cell_bounds)
-                    stabilized_to_unstabilized_homography, _ = cv2.findHomography(
-                        stabilized_cell_bounds, unstabilized_cell_bounds)
+                    unstabilized_cell_bounds = row_col_to_unstabilized_vertex_x_y[cell_top_left_row:cell_top_left_row+2, cell_top_left_col:cell_top_left_col+2].reshape(-1, 2)
+                    stabilized_cell_bounds = row_col_to_stabilized_vertex_x_y[cell_top_left_row:cell_top_left_row+2, cell_top_left_col:cell_top_left_col+2].reshape(-1, 2)
+                    unstabilized_to_stabilized_homography, _ = cv2.findHomography(unstabilized_cell_bounds, stabilized_cell_bounds)
+                    stabilized_to_unstabilized_homography, _ = cv2.findHomography(stabilized_cell_bounds, unstabilized_cell_bounds)
 
-                    unstabilized_cell_x_bounds, unstabilized_cell_y_bounds = np.transpose(
-                        unstabilized_cell_bounds)
-                    unstabilized_cell_left_x = math.floor(
-                        np.min(unstabilized_cell_x_bounds))
-                    unstabilized_cell_right_x = math.ceil(
-                        np.max(unstabilized_cell_x_bounds))
-                    unstabilized_cell_top_y = math.floor(
-                        np.min(unstabilized_cell_y_bounds))
-                    unstabilized_cell_bottom_y = math.ceil(
-                        np.max(unstabilized_cell_y_bounds))
+                    unstabilized_cell_x_bounds, unstabilized_cell_y_bounds = np.transpose(unstabilized_cell_bounds)
+                    unstabilized_cell_left_x = math.floor(np.min(unstabilized_cell_x_bounds))
+                    unstabilized_cell_right_x = math.ceil(np.max(unstabilized_cell_x_bounds))
+                    unstabilized_cell_top_y = math.floor(np.min(unstabilized_cell_y_bounds))
+                    unstabilized_cell_bottom_y = math.ceil(np.max(unstabilized_cell_y_bounds))
 
-                    unstabilized_cell_mask = np.zeros(
-                        (frame_height, frame_width))
-                    unstabilized_cell_mask[unstabilized_cell_top_y:unstabilized_cell_bottom_y +
-                                           1, unstabilized_cell_left_x:unstabilized_cell_right_x+1] = 255
-                    stabilized_cell_mask = cv2.warpPerspective(
-                        unstabilized_cell_mask, unstabilized_to_stabilized_homography, (frame_width, frame_height))
+                    unstabilized_cell_mask = np.zeros((frame_height, frame_width))
+                    unstabilized_cell_mask[unstabilized_cell_top_y:unstabilized_cell_bottom_y+1, unstabilized_cell_left_x:unstabilized_cell_right_x+1] = 255
+                    stabilized_cell_mask = cv2.warpPerspective(unstabilized_cell_mask, unstabilized_to_stabilized_homography, (frame_width, frame_height))
 
-                    # print(f'cell ({cell_top_left_row}, {cell_top_left_col}):')
-                    # print('unstabilized_cell_bounds:')
-                    # print(unstabilized_cell_bounds)
-                    # print('stabilized_cell_bounds:')
-                    # print(stabilized_cell_bounds)
-                    # print('x range:', unstabilized_cell_left_x, unstabilized_cell_right_x)
-                    # print('y range:', unstabilized_cell_top_y, unstabilized_cell_bottom_y)
-                    # print('---------')
-
-                    cell_unstabilized_x_y = cv2.perspectiveTransform(
-                        frame_stabilized_x_y, stabilized_to_unstabilized_homography)
-                    cell_stabilized_y_x_to_unstabilized_x_y = cell_unstabilized_x_y.reshape(
-                        (frame_height, frame_width, 2))
-                    cell_stabilized_y_x_to_unstabilized_x, cell_stabilized_y_x_to_unstabilized_y = np.moveaxis(
-                        cell_stabilized_y_x_to_unstabilized_x_y, 2, 0)
+                    cell_unstabilized_x_y = cv2.perspectiveTransform(frame_stabilized_x_y, stabilized_to_unstabilized_homography)
+                    cell_stabilized_y_x_to_unstabilized_x_y = cell_unstabilized_x_y.reshape((frame_height, frame_width, 2))
+                    cell_stabilized_y_x_to_unstabilized_x, cell_stabilized_y_x_to_unstabilized_y = np.moveaxis(cell_stabilized_y_x_to_unstabilized_x_y, 2, 0)
 
                     # update the overall stabilized-to-unstabilized map, applying this cell's
                     # transformation only to those pixels that are actually part of this cell
-                    frame_stabilized_y_x_to_unstabilized_x = np.where(
-                        stabilized_cell_mask, cell_stabilized_y_x_to_unstabilized_x, frame_stabilized_y_x_to_unstabilized_x)
-                    frame_stabilized_y_x_to_unstabilized_y = np.where(
-                        stabilized_cell_mask, cell_stabilized_y_x_to_unstabilized_y, frame_stabilized_y_x_to_unstabilized_y)
+                    frame_stabilized_y_x_to_unstabilized_x = np.where(stabilized_cell_mask, cell_stabilized_y_x_to_unstabilized_x, frame_stabilized_y_x_to_unstabilized_x)
+                    frame_stabilized_y_x_to_unstabilized_y = np.where(stabilized_cell_mask, cell_stabilized_y_x_to_unstabilized_y, frame_stabilized_y_x_to_unstabilized_y)
 
-            stabilized_frame = cv2.remap(unstabilized_frame, frame_stabilized_y_x_to_unstabilized_x.reshape((frame_height, frame_width, 1)).astype(
-                np.float32), frame_stabilized_y_x_to_unstabilized_y.reshape((frame_height, frame_width, 1)).astype(np.float32), cv2.INTER_LINEAR)
+            stabilized_frame = cv2.remap(
+                unstabilized_frame,
+                frame_stabilized_y_x_to_unstabilized_x.reshape((frame_height, frame_width, 1)).astype(np.float32),
+                frame_stabilized_y_x_to_unstabilized_y.reshape((frame_height, frame_width, 1)).astype(np.float32),
+                cv2.INTER_LINEAR
+            )
 
             stabilized_frames.append(stabilized_frame)
             print('\tdone.')
 
-        for i, unstabilized_frame in enumerate(stabilized_frames):
-            print('frame shape:', unstabilized_frame.shape)
-            cv2.imshow('stabilized video', cv2.cvtColor(
-                unstabilized_frame, cv2.COLOR_BGR2GRAY) - cv2.cvtColor(unstabilized_frames[i], cv2.COLOR_BGR2GRAY))
-            # close window when q pressed; see https://stackoverflow.com/a/57691103
-            if cv2.waitKey(41) & 0xFF == ord('q'):
-                break
+        combined_frames = []
+        for i, frame in enumerate(stabilized_frames):
+            combined_frame = np.vstack((frame, unstabilized_frames[i]))
+            combined_frames.append(combined_frame)
+
+        while True:
+            # for i, frame in enumerate(stabilized_frames):
+
+            #     # cv2.imshow('video diff', cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) - cv2.cvtColor(unstabilized_frames[i], cv2.COLOR_BGR2GRAY))
+            #     cv2.imshow('both videos:', both_frames)
+            #     # close window when q pressed; see https://stackoverflow.com/a/57691103
+            #     if cv2.waitKey(41) & 0xFF == ord('q'):
+            #         return stabilized_frames
+
+            for combined_frame in combined_frames:
+                cv2.imshow('both videos:', combined_frame)
+                if cv2.waitKey(41) & 0xFF == ord('q'):
+                    return stabilized_frames
 
         return stabilized_frames
 
