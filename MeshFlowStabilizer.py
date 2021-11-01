@@ -1,10 +1,7 @@
-from collections import deque
 import cv2
 import math
 import numpy as np
 from scipy.ndimage import median_filter
-
-from Frame import Frame
 
 # TODO remove when finished testing
 import sys
@@ -68,8 +65,8 @@ class MeshFlowStabilizer:
         (The stabilized video is saved to output_path.)
         '''
 
-        num_frames, frames, homographies, vertex_unstabilized_residual_displacements_by_frame_index = self._get_unstabilized_video_properties(input_path)
-        vertex_stabilized_residual_displacements_by_frame_index = self._get_stabilized_residual_displacements(homographies, num_frames, vertex_unstabilized_residual_displacements_by_frame_index)
+        num_frames, unstabilized_frames, homographies, vertex_unstabilized_residual_displacements_by_frame_index = self._get_unstabilized_video_properties(input_path)
+        vertex_stabilized_residual_displacements_by_frame_index = self._get_stabilized_residual_displacements(num_frames, vertex_unstabilized_residual_displacements_by_frame_index)
 
 
     def _get_unstabilized_video_properties(self, input_path):
@@ -87,15 +84,16 @@ class MeshFlowStabilizer:
         A tuple of the following properties of the unstabilized video, in order.
 
         * num_frames: The number of frames in the unstabilized video.
-        * frames: A list of the frames in the video, represented as Frame objects with their
-            pixels_bgr and mesh_velocities properties specified.
+        * unstabilized_frames: A list of the frames in the unstabilized video, each represented as a
+            NumPy array.
         * homographies: A NumPy array of shape
-            (num_frames - 1, self.HOMOGRAPHY_MATRIX_NUM_ROWS, self.HOMOGRAPHY_MATRIX_NUM_COLS)
+            (num_frames, self.HOMOGRAPHY_MATRIX_NUM_ROWS, self.HOMOGRAPHY_MATRIX_NUM_COLS)
             containing global homographies between frames.
             In particular, homographies[frame_index] contains the homography matrix between frames
-            frame_index and frame_index + 1.
-            NOTE the valid values for frame_index are 0, ..., num_frames - 2 (the first frame to the
-            second-to-last frame).
+            frame_index - 1 and frame_index (that is, the homography to construct frame_index).
+            Since frame 0 has no prior frame, homographies[0] is the identity homography.
+            NOTE the valid values for frame_index are 0, ..., num_frames - 1 (the first frame to the
+            last frame).
         * vertex_unstabilized_residual_displacements_by_frame_index: A NumPy array of shape
             (num_frames, self.MESH_ROW_COUNT, self.MESH_COL_COUNT, 2)
             containing the unstabilized residual displacements of each vertex in the MeshFlow mesh.
@@ -115,7 +113,7 @@ class MeshFlowStabilizer:
         num_frames = int(unstabilized_video.get(cv2.CAP_PROP_FRAME_COUNT))
 
         homographies = np.empty(
-            (num_frames - 1, self.HOMOGRAPHY_MATRIX_NUM_ROWS,
+            (num_frames, self.HOMOGRAPHY_MATRIX_NUM_ROWS,
              self.HOMOGRAPHY_MATRIX_NUM_COLS)
         )
 
@@ -139,8 +137,9 @@ class MeshFlowStabilizer:
         if prev_frame is None:
             raise IOError(
                 f'Video at <{input_path}> does not contain any frames.')
-        frames = [prev_frame]
+        unstabilized_frames = [prev_frame]
         vertex_unstabilized_residual_displacements_by_frame_index[0].fill(0)
+        homographies[0] = np.identity(3)
 
         # process all subsequent frames (which do have a previous frame)
         for frame_index in range(1, num_frames):
@@ -150,28 +149,25 @@ class MeshFlowStabilizer:
                     f'Video at <{input_path}> did not have frame {frame_index} of '
                     f'{num_frames} (indexed from 0).'
                 )
-            frames.append(current_frame)
+            unstabilized_frames.append(current_frame)
 
             # calculcate homography between prev and current frames;
             # when calculating unstabilized velocities and performing the optimization, we assume
             # the homography has been applied already and only calculate residual velocities
             prev_features, current_features = self._get_all_matched_features_between_images(
-                prev_frame.pixels_bgr, current_frame.pixels_bgr
+                prev_frame, current_frame
             )
             homography, _ = cv2.findHomography(prev_features, current_features)
-            homographies[frame_index-1] = homography
+            homographies[frame_index] = homography
 
-            prev_frame.mesh_residual_velocities = self._get_mesh_residual_velocities(
-                prev_frame, current_frame, homography)
-            vertex_unstabilized_residual_velocities_by_frame_index[frame_index-1] = prev_frame.mesh_residual_velocities
-            vertex_unstabilized_residual_displacements_by_frame_index[frame_index] = vertex_unstabilized_residual_displacements_by_frame_index[
-                frame_index-1] + vertex_unstabilized_residual_velocities_by_frame_index[frame_index-1]
+            vertex_unstabilized_residual_velocities_by_frame_index[frame_index-1] = self._get_mesh_residual_velocities(prev_frame, current_frame, homography)
+            vertex_unstabilized_residual_displacements_by_frame_index[frame_index] = vertex_unstabilized_residual_displacements_by_frame_index[frame_index-1] + vertex_unstabilized_residual_velocities_by_frame_index[frame_index-1]
 
             prev_frame = current_frame
 
         unstabilized_video.release()
 
-        return (num_frames, frames, homographies, vertex_unstabilized_residual_displacements_by_frame_index)
+        return (num_frames, unstabilized_frames, homographies, vertex_unstabilized_residual_displacements_by_frame_index)
 
 
     def _get_next_frame(self, video):
@@ -186,28 +182,26 @@ class MeshFlowStabilizer:
 
         Output:
 
-        * next_frame: the next frame in video if available, and None otherwise.
+        * next_frame: If available, the next frame in the video as a NumPy array, and None
+            otherwise.
         '''
 
-        frame_successful, pixels_bgr = video.read()
-        if not frame_successful:  # all the video's frames had already been read
-            return None
-
-        return Frame(pixels_bgr)
+        frame_successful, pixels = video.read()
+        return pixels if frame_successful else None
 
 
     def _get_mesh_residual_velocities(self, early_frame, late_frame, homography):
         '''
         Helper method for _get_unstabilized_video_properties.
 
-        Given two adjacent Frames (the "early" and "late" Frames) and a homography to apply to the
-        late Frame, estimate the residual velocities (the remaining velocity after the homography
-        has been applied) of the vertices in the early Frame.
+        Given two adjacent frames (the "early" and "late" frames) and a homography to apply to the
+        late frame, estimate the residual velocities (the remaining velocity after the homography
+        has been applied) of the vertices in the early frame.
 
         Input:
 
-        * early_frame: A Frame object representing the frame before late_frame.
-        * late_frame: A Frame object representing the frame after early_frame.
+        * early_frame: A NumPy array representing the frame before late_frame.
+        * late_frame: A NumPy array representing the frame after early_frame.
         * homography: A homography matrix to apply to late_frame.
 
         Output:
@@ -218,7 +212,7 @@ class MeshFlowStabilizer:
             contains the x-velocity of the mesh vertex at the given row and col during early_frame,
             and mesh_residual_velocities[row][col][1] contains the corresponding y-velocity.
             NOTE since time is discrete and in units of frames, a vertex's velocity during
-            early_frame is the same as it displacement from early_frame to late_frame.
+            early_frame is the same as its displacement from early_frame to late_frame.
         '''
 
         mesh_nearby_feature_velocities = self._get_mesh_nearby_feature_velocities(early_frame, late_frame, homography)
@@ -250,14 +244,14 @@ class MeshFlowStabilizer:
         '''
         Helper method for _get_mesh_residual_velocities.
 
-        Given two adjacent frames and a homography to apply to the later Frame,
+        Given two adjacent frames and a homography to apply to the later frame,
         return a list that maps each vertex in the mesh to the residual velocities of its nearby
         features.
 
         Input:
 
-        * early_frame: A Frame object representing the frame before late_frame.
-        * late_frame: A Frame object representing the frame after early_frame.
+        * early_frame: A NumPy array representing the frame before late_frame.
+        * late_frame: A NumPy array representing the frame after early_frame.
         * homography: A homography matrix to apply to late_frame so that subsequent displacement
             calculations determine residual displacements (displacements in addition to the
             homography).
@@ -271,7 +265,7 @@ class MeshFlowStabilizer:
             and column.
         '''
 
-        frame_height, frame_width, _ = early_frame.pixels_bgr.shape
+        frame_height, frame_width, _ = early_frame.shape
         window_width = math.ceil(frame_width / self.OUTLIER_SUBREGIONS_COL_COUNT)
         window_height = math.ceil(frame_height / self.OUTLIER_SUBREGIONS_ROW_COUNT)
 
@@ -283,10 +277,10 @@ class MeshFlowStabilizer:
         # TODO parallelize
         for window_left_x in range(0, frame_width, window_width):
             for window_top_y in range(0, frame_height, window_height):
-                early_window = early_frame.pixels_bgr[window_top_y:window_top_y+window_height,
-                                                      window_left_x:window_left_x+window_width]
-                late_window = late_frame.pixels_bgr[window_top_y:window_top_y+window_height,
-                                                    window_left_x:window_left_x+window_width]
+                early_window = early_frame[window_top_y:window_top_y+window_height,
+                                           window_left_x:window_left_x+window_width]
+                late_window = late_frame[window_top_y:window_top_y+window_height,
+                                         window_left_x:window_left_x+window_width]
                 window_offset = [window_left_x, window_top_y]
 
                 self._place_window_feature_velocities_into_list(
@@ -433,7 +427,6 @@ class MeshFlowStabilizer:
         if early_features_including_outliers is None:
             return (None, None)
 
-
         # eliminate outlying features using RANSAC
         _, outlier_features = cv2.findHomography(
             early_features_including_outliers, late_features_including_outliers, method=cv2.RANSAC
@@ -498,7 +491,7 @@ class MeshFlowStabilizer:
         return (early_features, late_features)
 
 
-    def _get_stabilized_residual_displacements(self, homographies, num_frames, vertex_unstabilized_residual_displacements_by_frame_index):
+    def _get_stabilized_residual_displacements(self, num_frames, vertex_unstabilized_residual_displacements_by_frame_index):
         '''
         Helper method for stabilize.
 
@@ -520,8 +513,6 @@ class MeshFlowStabilizer:
 
         Input:
 
-        * homographies: A NumPy array of shape containing global homographies between frames,
-            as outputted by _get_unstabilized_video_properties.
         * vertex_unstabilized_residual_displacements_by_frame_index: A NumPy array containing the
             unstabilized residual displacements of each vertex in the MeshFlow mesh, as outputted
             by _get_unstabilized_video_properties.
@@ -609,26 +600,26 @@ class MeshFlowStabilizer:
         # Instead, vertex_unstabilized_residual_displacements_by_coord is indexed by
         # row, then col, then frame_index, then velocity component;
         # this rearrangement should allow for faster access during the optimization step.
-        print('vertex_unstabilized_residual_displacements_by_frame_index has shape', vertex_unstabilized_residual_displacements_by_frame_index.shape)
+        # print('vertex_unstabilized_residual_displacements_by_frame_index has shape', vertex_unstabilized_residual_displacements_by_frame_index.shape)
         vertex_unstabilized_residual_displacements_by_coord = np.moveaxis(
             vertex_unstabilized_residual_displacements_by_frame_index, 0, 2
         )
         vertex_stabilized_residual_displacements_by_coord = np.empty(vertex_unstabilized_residual_displacements_by_coord.shape)
-        print('vertex_unstabilized_residual_x_displacements_by_coord has shape', vertex_unstabilized_residual_displacements_by_coord.shape)
+        # print('vertex_unstabilized_residual_x_displacements_by_coord has shape', vertex_unstabilized_residual_displacements_by_coord.shape)
         # TODO parallelize
         for mesh_row in range(self.MESH_ROW_COUNT + 1):
             for mesh_col in range(self.MESH_COL_COUNT + 1):
-                print(f'vertex ({mesh_row}, {mesh_col}):')
+                # print(f'vertex ({mesh_row}, {mesh_col}):')
                 vertex_unstabilized_residual_displacements = vertex_unstabilized_residual_displacements_by_coord[mesh_row][mesh_col]
-                print('unstabilized:')
+                # print('unstabilized:')
                 print(vertex_unstabilized_residual_displacements)
                 vertex_stabilized_residual_displacements = self._get_jacobi_method_output(
                     off_diagonal_coefficients, on_diagonal_coefficients,
                     vertex_unstabilized_residual_displacements,
                     vertex_unstabilized_residual_displacements
                 )
-                print('stabilized:')
-                print(vertex_stabilized_residual_displacements)
+                # print('stabilized:')
+                # print(vertex_stabilized_residual_displacements)
                 vertex_stabilized_residual_displacements_by_coord[mesh_row][mesh_col] = vertex_stabilized_residual_displacements
 
         vertex_stabilized_residual_displacements_by_frame_index = np.moveaxis(
@@ -652,9 +643,11 @@ class MeshFlowStabilizer:
         * off_diagonal_coefficients: A 2D NumPy array containing the off-diagonal entries of A.
             Specifically, off_diagonal_coefficients[i, j] = A_{i, j} where i != j, and all
             on-diagonal entries off_diagonal_coefficients[i, i] = 0.
+            In the Wikipedia link, this matrix is L + U.
         * on_diagonal_coefficients: A 2D NumPy array containing the on-diagonal entries of A.
             Specifically, on_diagonal_coefficients[i, i] = A_{i, i}, and all off-diagonal entries
             of on_diagonal_coefficients are 0.
+            In the Wikipedia link, this matrix is D.
         * x_start: A NumPy array containing an initial estimate for x.
         * b: A NumPy array containing the constant vector b.
 
@@ -665,7 +658,7 @@ class MeshFlowStabilizer:
 
         x = x_start.copy()
 
-        for i in range(self.OPTIMIZATION_NUM_ITERATIONS):
+        for _ in range(self.OPTIMIZATION_NUM_ITERATIONS):
             # print(f'\titeration {i}')
             # print('\t\off_diagonal_coefficients.shape:', off_diagonal_coefficients.shape)
             # print('\t\tx.shape:', x.shape)
