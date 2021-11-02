@@ -576,50 +576,41 @@ class MeshFlowStabilizer:
         # adaptive_weights that appears in the partial derivatives of the energy function.
         # Using the paper's notation, off_diagonal_coefficients[t, r] is denoted as
         # \lambda_r w_{r, t} - \lambda_t w_{t, r}.
-        # print(f'np.diag(adaptive_weights) (shape: {np.diag(adaptive_weights).shape}):')
-        # print(np.diag(adaptive_weights))
-        # print(f'regularization_weights (shape: {regularization_weights.shape}):')
-        # print(regularization_weights)
+        # If times t and r are so far apart that time r will not appear in time t's window,
+        # then off_diagonal_coefficients[t, r] is 0.
         combined_adaptive_regularization_weights = np.matmul(np.diag(adaptive_weights), regularization_weights)
-        # print(f'combined_adaptive_regularization_weights (shape: {combined_adaptive_regularization_weights.shape}')
-        # print(combined_adaptive_regularization_weights)
-        off_diagonal_coefficients = np.transpose(combined_adaptive_regularization_weights) - combined_adaptive_regularization_weights
-        # print(f'off_diagonal_coefficients (shape: {off_diagonal_coefficients.shape}):')
-        # print(off_diagonal_coefficients)
+        off_diagonal_coefficients = -2 * combined_adaptive_regularization_weights
+        # set coefficients to 0 for appropriate t,r; see https://stackoverflow.com/a/36247680
+        off_diagonal_mask = np.zeros(off_diagonal_coefficients.shape)
+        for i in range(-self.TEMPORAL_SMOOTHING_RADIUS, self.TEMPORAL_SMOOTHING_RADIUS + 1):
+            off_diagonal_mask += np.diag(np.ones(num_frames - abs(i)), i)
+        off_diagonal_coefficients = np.where(off_diagonal_mask, off_diagonal_coefficients, 0)
+
 
         # on_diagonal_coefficients is a diagonal matrix where on_diagonal_coefficients[t, t] contains a
         # coefficient that appears in partial derivatives of the energy function.
         # Using the paper's notation, on_diagonal_coefficients[t, t] is denoted as
         # 1 / \left(1 + \sum_{r \in \Omega_t, r \neq t} \left( \lambda_t w_{t, r} - \lambda_r w_{r, t} \right) \right)
         on_diagonal_coefficients = np.diag(np.reciprocal(1 - np.sum(off_diagonal_coefficients, axis=1)))
-        # print(f'on_diagonal_coefficients (shape: {on_diagonal_coefficients.shape})')
-        # print(on_diagonal_coefficients)
 
         # vertex_unstabilized_residual_displacements_by_frame_index is indexed by
         # frame_index, then row, then col, then velocity component.
         # Instead, vertex_unstabilized_residual_displacements_by_coord is indexed by
         # row, then col, then frame_index, then velocity component;
         # this rearrangement should allow for faster access during the optimization step.
-        # print('vertex_unstabilized_residual_displacements_by_frame_index has shape', vertex_unstabilized_residual_displacements_by_frame_index.shape)
         vertex_unstabilized_residual_displacements_by_coord = np.moveaxis(
             vertex_unstabilized_residual_displacements_by_frame_index, 0, 2
         )
         vertex_stabilized_residual_displacements_by_coord = np.empty(vertex_unstabilized_residual_displacements_by_coord.shape)
-        # print('vertex_unstabilized_residual_x_displacements_by_coord has shape', vertex_unstabilized_residual_displacements_by_coord.shape)
         # TODO parallelize
         for mesh_row in range(self.MESH_ROW_COUNT + 1):
             for mesh_col in range(self.MESH_COL_COUNT + 1):
-                # print(f'vertex ({mesh_row}, {mesh_col}):')
                 vertex_unstabilized_residual_displacements = vertex_unstabilized_residual_displacements_by_coord[mesh_row][mesh_col]
-                # print('unstabilized:')
-                print(vertex_unstabilized_residual_displacements)
                 vertex_stabilized_residual_displacements = self._get_jacobi_method_output(
                     off_diagonal_coefficients, on_diagonal_coefficients,
                     vertex_unstabilized_residual_displacements,
                     vertex_unstabilized_residual_displacements
                 )
-                # print('stabilized:')
-                # print(vertex_stabilized_residual_displacements)
                 vertex_stabilized_residual_displacements_by_coord[mesh_row][mesh_col] = vertex_stabilized_residual_displacements
 
         vertex_stabilized_residual_displacements_by_frame_index = np.moveaxis(
@@ -701,10 +692,10 @@ class MeshFlowStabilizer:
         # of the coordinates of the mesh nodes in the stabilized video, indexed from the top left
         # corner and moving left-to-right, top-to-bottom.
         unstabilized_vertex_x_y = np.array([
-            [[math.ceil(frame_width * (col / (self.MESH_COL_COUNT))),
-              math.ceil(frame_height * (row / (self.MESH_ROW_COUNT)))]]
-            for row in range(self.MESH_COL_COUNT + 1)
-            for col in range(self.MESH_ROW_COUNT + 1)
+            [[math.ceil((frame_width - 1) * (col / (self.MESH_COL_COUNT))),
+              math.ceil((frame_height - 1) * (row / (self.MESH_ROW_COUNT)))]]
+            for row in range(self.MESH_ROW_COUNT + 1)
+            for col in range(self.MESH_COL_COUNT + 1)
         ], dtype=np.float32)
 
         # row_col_to_unstabilized_vertex_x_y[row, col] and
@@ -803,25 +794,6 @@ class MeshFlowStabilizer:
 
             stabilized_frames.append(stabilized_frame)
             print('\tdone.')
-
-        combined_frames = []
-        for i, frame in enumerate(stabilized_frames):
-            combined_frame = np.vstack((frame, unstabilized_frames[i]))
-            combined_frames.append(combined_frame)
-
-        while True:
-            # for i, frame in enumerate(stabilized_frames):
-
-            #     # cv2.imshow('video diff', cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) - cv2.cvtColor(unstabilized_frames[i], cv2.COLOR_BGR2GRAY))
-            #     cv2.imshow('both videos:', both_frames)
-            #     # close window when q pressed; see https://stackoverflow.com/a/57691103
-            #     if cv2.waitKey(41) & 0xFF == ord('q'):
-            #         return stabilized_frames
-
-            for combined_frame in combined_frames:
-                cv2.imshow('both videos:', combined_frame)
-                if cv2.waitKey(41) & 0xFF == ord('q'):
-                    return stabilized_frames
 
         return stabilized_frames
 
