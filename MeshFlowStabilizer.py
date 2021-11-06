@@ -258,7 +258,7 @@ class MeshFlowStabilizer:
         # position.
         # Its velocity takes it from the early position to its late position.
         # TODO rewrite
-        frame_height, frame_width, _ = early_frame.shape
+        frame_height, frame_width, = early_frame.shape[:2]
         vertex_x_y = self._get_vertex_x_y(frame_width, frame_height)
         vertex_velocities = cv2.perspectiveTransform(vertex_x_y, early_to_late_homography) - vertex_x_y
         vertex_velocities_by_row_col = np.reshape(vertex_velocities, (self.mesh_row_count + 1, self.mesh_col_count + 1, 2))
@@ -329,7 +329,7 @@ class MeshFlowStabilizer:
             the x-velocities of all the features nearby the vertex at the given row and col.
         '''
 
-        frame_height, frame_width, _ = early_frame.shape
+        frame_height, frame_width = early_frame.shape[:2]
         window_width = math.ceil(frame_width / self.mesh_outlier_subregion_col_count)
         window_height = math.ceil(frame_height / self.mesh_outlier_subregion_row_count)
 
@@ -784,7 +784,7 @@ class MeshFlowStabilizer:
             NumPy array.
         '''
 
-        frame_height, frame_width, _ = unstabilized_frames[0].shape
+        frame_height, frame_width = unstabilized_frames[0].shape[:2]
 
         # unstabilized_vertex_x_y and stabilized_vertex_x_y are CV_32FC2 NumPy arrays
         # (see https://stackoverflow.com/a/47617999)
