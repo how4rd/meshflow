@@ -85,7 +85,7 @@ class MeshFlowStabilizer:
         (The stabilized video is saved to output_path.)
         '''
 
-        unstabilized_frames, num_frames, frames_per_second = self._get_unstabilized_frames_and_video_features(input_path)
+        unstabilized_frames, num_frames, frames_per_second, codec = self._get_unstabilized_frames_and_video_features(input_path)
         vertex_unstabilized_displacements_by_frame_index, homographies = self._get_unstabilized_vertex_displacements_and_homographies(num_frames, unstabilized_frames)
         vertex_stabilized_displacements_by_frame_index = self._get_stabilized_vertex_displacements(num_frames, vertex_unstabilized_displacements_by_frame_index, homographies)
         stabilized_frames = self._get_stabilized_frames(
@@ -94,7 +94,10 @@ class MeshFlowStabilizer:
             vertex_stabilized_displacements_by_frame_index
         )
 
+        self._write_stabilized_video(output_path, num_frames, frames_per_second, codec, stabilized_frames)
         self._display_unstablilized_and_stabilized_video_loop(num_frames, frames_per_second, unstabilized_frames, stabilized_frames)
+
+
 
         # TODO save results to file
 
@@ -117,12 +120,14 @@ class MeshFlowStabilizer:
             NumPy array.
         * num_frames: The number of frames in the video.
         * frames_per_second: The video framerate in frames per second.
+        * codec: The video codec.
         '''
 
         unstabilized_video = cv2.VideoCapture(input_path)
         # for getting num_frames, see https://stackoverflow.com/a/39953739
         num_frames = int(unstabilized_video.get(cv2.CAP_PROP_FRAME_COUNT))
         frames_per_second = unstabilized_video.get(cv2.CAP_PROP_FPS)
+        codec = int(unstabilized_video.get(cv2.CAP_PROP_FOURCC))
 
         with tqdm.trange(num_frames) as t:
             t.set_description(f'Loading video from <{input_path}>')
@@ -137,7 +142,9 @@ class MeshFlowStabilizer:
                     )
                 unstabilized_frames.append(unstabilized_frame)
 
-        return (unstabilized_frames, num_frames, frames_per_second)
+        unstabilized_video.release()
+
+        return (unstabilized_frames, num_frames, frames_per_second, codec)
 
 
     def _get_next_frame(self, video):
@@ -912,10 +919,45 @@ class MeshFlowStabilizer:
                     return
 
 
+    def _write_stabilized_video(self, output_path, num_frames, frames_per_second, codec, stabilized_frames):
+        '''
+        Helper method for stabilize.
+        Write the given stabilized frames as a video to the given path.
+
+        Input:
+        * output_path: The path where the stabilized version of the video should be placed.
+        * num_frames: The number of frames in the video.
+        * frames_per_second: The video framerate in frames per second.
+        * codec: The video codec.
+        * stabilized_frames: A list of the frames in the stabilized video, each represented as a
+            NumPy array.
+
+        Output:
+
+        (The video is saved to output_path.)
+        '''
+
+        # adapted from https://learnopencv.com/read-write-and-display-a-video-using-opencv-cpp-python/
+        frame_height, frame_width = stabilized_frames[0].shape[:2]
+        video = cv2.VideoWriter(
+            output_path,
+            codec,
+            frames_per_second,
+            (frame_width, frame_height)
+        )
+
+        with tqdm.trange(num_frames) as t:
+            t.set_description(f'Writing stabilized video to <{output_path}>')
+            for frame_index in t:
+                video.write(stabilized_frames[frame_index])
+
+        video.release()
+
+
 def main():
     # TODO get video path from command line args
     input_path = 'videos/data_small-shaky-5.m4v'
-    output_path = 'videos/data_small-shaky-5-smoothed.avi'
+    output_path = 'videos/data_small-shaky-5-stabilized.m4v'
     stabilizer = MeshFlowStabilizer()
     stabilizer.stabilize(input_path, output_path)
 
