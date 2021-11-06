@@ -98,10 +98,6 @@ class MeshFlowStabilizer:
         self._display_unstablilized_and_stabilized_video_loop(num_frames, frames_per_second, unstabilized_frames, stabilized_frames)
 
 
-
-        # TODO save results to file
-
-
     def _get_unstabilized_frames_and_video_features(self, input_path):
         '''
         Helper method for stabilize.
@@ -130,7 +126,7 @@ class MeshFlowStabilizer:
         codec = int(unstabilized_video.get(cv2.CAP_PROP_FOURCC))
 
         with tqdm.trange(num_frames) as t:
-            t.set_description(f'Loading video from <{input_path}>')
+            t.set_description(f'Reading video from <{input_path}>')
 
             unstabilized_frames = []
             for frame_index in t:
@@ -257,7 +253,6 @@ class MeshFlowStabilizer:
         # get its position in the late frame, we apply early_to_late_homography to its early
         # position.
         # Its velocity takes it from the early position to its late position.
-        # TODO rewrite
         frame_height, frame_width, = early_frame.shape[:2]
         vertex_x_y = self._get_vertex_x_y(frame_width, frame_height)
         vertex_velocities = cv2.perspectiveTransform(vertex_x_y, early_to_late_homography) - vertex_x_y
