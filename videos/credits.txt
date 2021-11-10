@@ -1,0 +1,9 @@
+The original paper featured tests on 10 videos. Some of these videos are available from other sources and are provided here. Because some videos were formatted incorrectly, all videos were converted from .avi to .m4v.
+
+video-1.m4v: shaky-5.avi from https://github.com/sudheerachary/Mesh-Flow-Video-Stabilization/blob/17e80ab23196c420529630689dfc432101b793f3/data/
+video-2.m4v: 1.avi from http://liushuaicheng.org/SIGGRAPH2013/data/Regular.zip
+video-3.m4v: 0.avi from http://liushuaicheng.org/SIGGRAPH2013/data/Regular.zip
+video-5.m4v: 6.avi from http://liushuaicheng.org/SIGGRAPH2013/data/Regular.zip
+video-8.m4v: 2.avi from http://liushuaicheng.org/SIGGRAPH2013/data/Regular.zip
+video-9.m4v: 3.avi from http://liushuaicheng.org/SIGGRAPH2013/data/Regular.zip
+video-10.m4v: 18.avi from http://liushuaicheng.org/SIGGRAPH2013/data/Regular.zip
