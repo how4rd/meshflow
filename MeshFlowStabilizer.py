@@ -806,6 +806,25 @@ class MeshFlowStabilizer:
             (num_frames, -1, 1, 2)
         )
 
+        # Construct map from the stabilized frame to the unstabilized frame.
+        # If (x_s, y_s) in the stabilized video is taken from (x_u, y_u) in the unstabilized
+        # video, then
+        # stabilized_y_x_to_unstabilized_x[y_s, x_s] = x_u,
+        # stabilized_y_x_to_unstabilized_y[y_s, x_s] = y_u, and
+        # frame_stabilized_y_x_to_stabilized_x_y[y_s, x_s] = [x_u, y_u].
+        # NOTE the inverted coordinate order. This setup allows us to index into map just like
+        # we index into the image. Each point [x_u, y_u] in the array is in OpenCV's expected
+        # order so we can easily apply homographies to those points.
+        # NOTE If a given coordinate's value is not changed by the subsequent steps, then that
+        # coordinate falls outside the stabilized image (so in the output image, that image
+        # should be filled with a border color).
+        # Since these arrays' default values fall outside the unstabilized image, remap will
+        # fill in those coordinates in the stabilized image with the border color as desired.
+        frame_stabilized_y_x_to_unstabilized_x_template = np.full((frame_height, frame_width), frame_width + 1)
+        frame_stabilized_y_x_to_unstabilized_y_template = np.full((frame_height, frame_width), frame_height + 1)
+        frame_stabilized_y_x_to_stabilized_x_y_template = np.swapaxes(np.indices((frame_width, frame_height), dtype=np.float32), 0, 2)
+        frame_stabilized_x_y_template = frame_stabilized_y_x_to_stabilized_x_y_template.reshape((-1, 1, 2))
+
         stabilized_frames = []
         with tqdm.trange(num_frames) as t:
             t.set_description('Warping frames')
@@ -826,10 +845,9 @@ class MeshFlowStabilizer:
                 # should be filled with a border color).
                 # Since these arrays' default values fall outside the unstabilized image, remap will
                 # fill in those coordinates in the stabilized image with the border color as desired.
-                frame_stabilized_y_x_to_unstabilized_x = np.full((frame_height, frame_width), frame_width + 1)
-                frame_stabilized_y_x_to_unstabilized_y = np.full((frame_height, frame_width), frame_height + 1)
-                frame_stabilized_y_x_to_stabilized_x_y = np.swapaxes(np.indices((frame_width, frame_height), dtype=np.float32), 0, 2)
-                frame_stabilized_x_y = frame_stabilized_y_x_to_stabilized_x_y.reshape((-1, 1, 2))
+                frame_stabilized_y_x_to_unstabilized_x = np.copy(frame_stabilized_y_x_to_unstabilized_x_template)
+                frame_stabilized_y_x_to_unstabilized_y = np.copy(frame_stabilized_y_x_to_unstabilized_y_template)
+                frame_stabilized_x_y = np.copy(frame_stabilized_x_y_template)
 
                 # Determine the coordinates of the mesh vertices in the stabilized video.
                 # The current displacements are given by vertex_unstabilized_displacements, and
@@ -951,8 +969,8 @@ class MeshFlowStabilizer:
 
 def main():
     # TODO get video path from command line args
-    input_path = 'videos/data_small-shaky-5.m4v'
-    output_path = 'videos/data_small-shaky-5-stabilized.m4v'
+    input_path = 'videos/original-paper-videos/video-1.m4v'
+    output_path = 'videos/original-paper-videos/video-1-stabilized.m4v'
     stabilizer = MeshFlowStabilizer()
     stabilizer.stabilize(input_path, output_path)
 
