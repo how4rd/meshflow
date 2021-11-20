@@ -16,6 +16,48 @@ class MeshFlowStabilizer:
     '''
 
 
+    '''
+    Enum indicating which formula to use to compute the Jacobi method optimization.
+
+    The values are:
+    * OPTIMIZATION_FORMULA_ORIGINAL: Use the formula that the authors seem to have to used in the
+        original paper. This formula is not explicitly described in the paper, but appears in
+        "Bundled Camera Paths for Video Stabilization" by S. Liu et al. without its derivation.
+    * OPTIMIZATION_FORMULA_DERIVED: Use the formula derived by setting the derivative of the energy
+        function to 0 and solving for the variable.
+    '''
+
+    OPTIMIZATION_FORMULA_ORIGINAL = 0
+    OPTIMIZATION_FORMULA_DERIVED = 1
+
+
+    '''
+    Enum indicating which definition to use for the energy function's adaptive weights.
+
+    The values are:
+    * ADAPTIVE_WEIGHTS_DEFINITION_ORIGINAL: Calculate the adaptive weights using the model suggested in the
+        original paper.
+    * ADAPTIVE_WEIGHTS_DEFINITION_FLIPPED: Calculate the adaptive weights using a variant of the original model
+        in which one of the terms has had its sign flipped. Suggested on GitHub TODO cite URL.
+    * ADAPTIVE_WEIGHTS_DEFINITION_CONSTANT_HIGH: Set the adaptive weights using a constant high value.
+        This model appears in the implementation on GitHub; see
+        https://github.com/sudheerachary/Mesh-Flow-Video-Stabilization/issues/12#issuecomment-553737073.
+    * ADAPTIVE_WEIGHTS_DEFINITION_CONSTANT_LOW: Set the adaptive weights to a constant low value.
+        This model is based on the authors' claim that smaller adaptive weights lead to less
+        cropping and wobbling.
+    '''
+
+    ADAPTIVE_WEIGHTS_DEFINITION_ORIGINAL = 0
+    ADAPTIVE_WEIGHTS_DEFINITION_FLIPPED = 1
+    ADAPTIVE_WEIGHTS_DEFINITION_CONSTANT_HIGH = 2
+    ADAPTIVE_WEIGHTS_DEFINITION_CONSTANT_LOW = 3
+
+
+    # The adaptive weights' constant high and low values.
+    ADAPTIVE_WEIGHTS_DEFINITION_CONSTANT_HIGH_VALUE = 100
+    ADAPTIVE_WEIGHTS_DEFINITION_CONSTANT_LOW_VALUE = 1
+
+
     def __init__(self, mesh_row_count=16, mesh_col_count=16,
         mesh_outlier_subregion_row_count=4, mesh_outlier_subregion_col_count=4,
         feature_ellipse_row_count=10, feature_ellipse_col_count=10,
@@ -28,9 +70,9 @@ class MeshFlowStabilizer:
         Input:
 
         * mesh_row_count: The number of rows contained in the mesh.
-            NOTE that there are 1 + mesh_row_count vertices per row.
+            NOTE There are 1 + mesh_row_count vertices per row.
         * mesh_col_count: The number of cols contained in the mesh.
-            NOTE that there are 1 + mesh_col_count vertices per column.
+            NOTE There are 1 + mesh_col_count vertices per column.
         * mesh_outlier_subregion_row_count: The height in rows of each subregion when breaking down
             the image down into subregions to eliminate outlying features.
         * mesh_outlier_subregion_col_count: The width of columns of each subregion when breaking
@@ -45,11 +87,12 @@ class MeshFlowStabilizer:
             frames to inspect both before and after each frame when computing that frame's
             regularization term. As a result, the regularization term involves a sum over up to
             2 * temporal_smoothing_radius frame indexes.
-            NOTE This constnat is denoted as \Omega_t in the original paper.
+            NOTE This constant is denoted as \Omega_{t} in the original paper.
         * optimization_num_iterations: The number of iterations of the Jacobi method to perform when
             minimizing the energy function.
         * color_outside_image_area_bgr: The color, expressed in BGR, to display behind the
             stabilized footage in the output.
+            NOTE This color should be removed during cropping, but is customizable just in case.
 
         Output:
 
@@ -70,7 +113,7 @@ class MeshFlowStabilizer:
         self.feature_detector = cv2.FastFeatureDetector_create()
 
 
-    def stabilize(self, input_path, output_path):
+    def stabilize(self, input_path, output_path, optimization_formula=OPTIMIZATION_FORMULA_ORIGINAL, adaptive_weights_definition=ADAPTIVE_WEIGHTS_DEFINITION_ORIGINAL):
         '''
         Read in the video at the given input path and output a stabilized version to the given
         output path.
@@ -79,6 +122,9 @@ class MeshFlowStabilizer:
 
         * input_path: The path to a video.
         * output_path: The path where the stabilized version of the video should be placed.
+        * optimization_formula: Which method to use to compute the Jacobi method optimization.
+        * adaptive_weights_definition: Which method to use for computing the energy function's adaptive
+            weights.
 
         Output:
 
@@ -102,9 +148,32 @@ class MeshFlowStabilizer:
             stability scores.
         '''
 
+        if not (optimization_formula == MeshFlowStabilizer.OPTIMIZATION_FORMULA_ORIGINAL or
+                optimization_formula == MeshFlowStabilizer.OPTIMIZATION_FORMULA_DERIVED):
+            raise ValueError(
+                'Invalid value for `optimization_formula`. Expecting value of '
+                '`MeshFlowStabilizer.OPTIMIZATION_FORMULA_ORIGINAL` or '
+                '`MeshFlowStabilizer.OPTIMIZATION_FORMULA_DERIVED`.'
+            )
+
+        if not (adaptive_weights_definition == MeshFlowStabilizer.ADAPTIVE_WEIGHTS_DEFINITION_ORIGINAL or
+                adaptive_weights_definition == MeshFlowStabilizer.ADAPTIVE_WEIGHTS_DEFINITION_FLIPPED or
+                adaptive_weights_definition == MeshFlowStabilizer.ADAPTIVE_WEIGHTS_DEFINITION_CONSTANT_HIGH or
+                adaptive_weights_definition == MeshFlowStabilizer.ADAPTIVE_WEIGHTS_DEFINITION_CONSTANT_LOW):
+            raise ValueError(
+                'Invalid value for `adaptive_weights_definition`. Expecting value of '
+                '`MeshFlowStabilizer.ADAPTIVE_WEIGHTS_DEFINITION_ORIGINAL`, '
+                '`MeshFlowStabilizer.ADAPTIVE_WEIGHTS_DEFINITION_FLIPPED`, '
+                '`MeshFlowStabilizer.ADAPTIVE_WEIGHTS_DEFINITION_CONSTANT_HIGH`, or'
+                '`MeshFlowStabilizer.ADAPTIVE_WEIGHTS_DEFINITION_CONSTANT_LOW`.'
+            )
+
         unstabilized_frames, num_frames, frames_per_second, codec = self._get_unstabilized_frames_and_video_features(input_path)
         vertex_unstabilized_displacements_by_frame_index, homographies = self._get_unstabilized_vertex_displacements_and_homographies(num_frames, unstabilized_frames)
-        vertex_stabilized_displacements_by_frame_index = self._get_stabilized_vertex_displacements(num_frames, vertex_unstabilized_displacements_by_frame_index, homographies)
+        vertex_stabilized_displacements_by_frame_index = self._get_stabilized_vertex_displacements(
+            num_frames, optimization_formula, adaptive_weights_definition,
+            vertex_unstabilized_displacements_by_frame_index, homographies
+        )
         stabilized_frames, crop_boundaries = self._get_stabilized_frames_and_crop_boundaries(
             num_frames, unstabilized_frames,
             vertex_unstabilized_displacements_by_frame_index,
@@ -564,7 +633,7 @@ class MeshFlowStabilizer:
         return (early_features, late_features)
 
 
-    def _get_stabilized_vertex_displacements(self, num_frames, vertex_unstabilized_displacements_by_frame_index, homographies):
+    def _get_stabilized_vertex_displacements(self, num_frames, optimization_formula, adaptive_weights_definition, vertex_unstabilized_displacements_by_frame_index, homographies):
         '''
         Helper method for stabilize.
 
@@ -587,6 +656,9 @@ class MeshFlowStabilizer:
         Input:
 
         * num_frames: The number of frames in the video.
+        * optimization_formula: Which method to use to compute the Jacobi method optimization.
+        * adaptive_weights_definition: Which definition to use for the energy function's adaptive
+            weights.
         * vertex_unstabilized_displacements_by_frame_index: A NumPy array containing the
             unstabilized residual displacements of each vertex in the MeshFlow mesh, as outputted
             by _get_unstabilized_frames_and_video_features.
@@ -607,79 +679,10 @@ class MeshFlowStabilizer:
             contains the corresponding y-displacement.
         '''
 
+
         frame_height, frame_width = vertex_unstabilized_displacements_by_frame_index[0].shape[:2]
 
-        # row_indexes[row][col] = row, col_indexes[row][col] = col
-        row_indexes, col_indexes = np.indices((num_frames, num_frames))
-
-        # regularization_weights[t, r] is a weight constant applied to the regularization term.
-        # In the paper, regularization_weights[t, r] is denoted as w_{t,r}.
-        regularization_weights = np.exp(
-            -np.square((3 / self.temporal_smoothing_radius) * (row_indexes - col_indexes))
-        )
-
-        adaptive_weights = np.full((num_frames,), 100)
-        # adaptive_weights[t] is a weight, derived from properties of the frames, applied to the
-        # regularization term corresponding to the frame at index t
-        # Note that the paper does not specify the weight to apply to the last frame (which does not
-        # have a velocity), so we assume it is the same as the second-to-last frame.
-        # In the paper, adaptive_weights[t] is denoted as \lambda_{t}.
-
-        # homography_affine_components = homographies.copy()
-        # homography_affine_components[:, 2, :] = [0, 0, 1]
-        # print('homography_affine_components:')
-        # print(homography_affine_components)
-        # eigenvalue_ratios[i] is the ratio of the two greatest eigenvalues for the matrix
-        # homography_affine_components[i];
-        # see https://stackoverflow.com/a/24395100
-
-        # adaptive_weights = np.empty((num_frames,))
-        # for i in range(homography_affine_components.shape[0]):
-        #     homography = homography_affine_components[i]
-        #     print('homography:')
-        #     print(homography)
-        #     eigenvalues = np.linalg.eigvals(homography)
-        #     print('eigenvalues:')
-        #     print(eigenvalues)
-        #     print('magnitudes:')
-        #     sorted_eigenvalue_magnitudes = np.sort(np.abs(eigenvalues))
-        #     print(sorted_eigenvalue_magnitudes)
-        #     translational_element = math.sqrt((homography[0, 2] / frame_width) ** 2 + (homography[1, 2] / frame_height) ** 2)
-        #     affine_component = sorted_eigenvalue_magnitudes[2] / sorted_eigenvalue_magnitudes[1]
-        #     print('translational_element:', translational_element)
-        #     print('affine component:', affine_component)
-        #     lambda_candidate_1 = -1.93 * translational_element + 0.95
-        #     print('lambda_candidate_1:', lambda_candidate_1)
-        #     # NOTE: the following comment suggests that the expression for lambda_candidate_2 as
-        #     # written in the paper may be a mistake:
-        #     # see https://github.com/sudheerachary/Mesh-Flow-Video-Stabilization/issues/12#issuecomment-553737073
-        #     lambda_candidate_2 = 5.83 * affine_component + 4.88
-        #     print('lambda candidate 2:', lambda_candidate_2)
-        #     adaptive_weight = max(min(lambda_candidate_1, lambda_candidate_2), 0)
-        #     print('final lambda:', adaptive_weight)
-        #     adaptive_weights[i] = adaptive_weight
-
-        #     print('-----')
-
-        # off_diagonal_coefficients[t, r] is a coefficient derived from the regularization_weights and
-        # adaptive_weights that appears in the partial derivatives of the energy function.
-        # Using the paper's notation, off_diagonal_coefficients[t, r] is denoted as
-        # \lambda_r w_{r, t} - \lambda_t w_{t, r}.
-        # If times t and r are so far apart that time r will not appear in time t's window,
-        # then off_diagonal_coefficients[t, r] is 0.
-        combined_adaptive_regularization_weights = np.matmul(np.diag(adaptive_weights), regularization_weights)
-        off_diagonal_coefficients = -2 * combined_adaptive_regularization_weights
-        # set coefficients to 0 for appropriate t,r; see https://stackoverflow.com/a/36247680
-        off_diagonal_mask = np.zeros(off_diagonal_coefficients.shape)
-        for i in range(-self.temporal_smoothing_radius, self.temporal_smoothing_radius + 1):
-            off_diagonal_mask += np.diag(np.ones(num_frames - abs(i)), i)
-        off_diagonal_coefficients = np.where(off_diagonal_mask, off_diagonal_coefficients, 0)
-
-        # on_diagonal_coefficients is a diagonal matrix where on_diagonal_coefficients[t, t] contains a
-        # coefficient that appears in partial derivatives of the energy function.
-        # Using the paper's notation, on_diagonal_coefficients[t, t] is denoted as
-        # 1 / \left(1 + \sum_{r \in \Omega_t, r \neq t} \left( \lambda_t w_{t, r} - \lambda_r w_{r, t} \right) \right)
-        on_diagonal_coefficients = np.diag(np.reciprocal(1 - np.sum(off_diagonal_coefficients, axis=1)))
+        off_diagonal_coefficients, on_diagonal_coefficients = self._get_jacobi_method_input(num_frames, frame_height, frame_width, optimization_formula, adaptive_weights_definition, homographies)
 
         # vertex_unstabilized_displacements_by_frame_index is indexed by
         # frame_index, then row, then col, then velocity component.
@@ -711,6 +714,154 @@ class MeshFlowStabilizer:
         return vertex_stabilized_displacements_by_frame_index
 
 
+    def _get_jacobi_method_input(self, num_frames, frame_width, frame_height, optimization_formula, adaptive_weights_definition, homographies):
+        '''
+        Helper method for _get_stabilized_displacements.
+        The Jacobi method (see https://en.wikipedia.org/w/index.php?oldid=1036645158),
+        approximates a solution for the vector x in the equation
+        A x = b
+        where A is a matrix of constants and b is a vector of constants.
+        Return the values in matrix A given the video's features and the user's chosen method.
+
+        Input:
+
+        * num_frames: The number of frames in the video.
+        * optimization_formula: Which method to use to compute the Jacobi method optimization.
+        * adaptive_weights_definition: Which definition to use for the energy function's adaptive
+            weights.
+        * frame_width: the width of the video's frames.
+        * frame_height: the height of the video's frames.
+        * homographies: A NumPy array of homographies as generated by
+            _get_unstabilized_vertex_displacements_and_homographies.
+
+        Output:
+
+        A tuple of the following items in order.
+
+        * off_diagonal_coefficients: A 2D NumPy array containing the off-diagonal entries of A.
+            Specifically, off_diagonal_coefficients[i, j] = A_{i, j} where i != j, and all
+            on-diagonal entries off_diagonal_coefficients[i, i] = 0.
+            In the Wikipedia link, this matrix is L + U.
+        * on_diagonal_coefficients: A 1D NumPy array containing the on-diagonal entries of A.
+            Specifically, on_diagonal_coefficients[i] = A_{i, i}.
+        '''
+
+        # row_indexes[row][col] = row, col_indexes[row][col] = col
+        row_indexes, col_indexes = np.indices((num_frames, num_frames))
+
+        # regularization_weights[t, r] is a weight constant applied to the regularization term.
+        # In the paper, regularization_weights[t, r] is denoted as w_{t,r}.
+        # NOTE that regularization_weights[i, i] = 0.
+        regularization_weights = np.exp(
+            -np.square((3 / self.temporal_smoothing_radius) * (row_indexes - col_indexes))
+        )
+
+        # adaptive_weights[t] is a weight, derived from properties of the frames, applied to the
+        # regularization term corresponding to the frame at index t
+        # Note that the paper does not specify the weight to apply to the last frame (which does not
+        # have a velocity), so we assume it is the same as the second-to-last frame.
+        # In the paper, adaptive_weights[t] is denoted as \lambda_{t}.
+        adaptive_weights = self._get_adaptive_weights(num_frames, frame_width, frame_height, adaptive_weights_definition, homographies)
+        # adaptive_weights = np.full((num_frames,), 10)
+
+        # combined_adaptive_regularization_weights[t, r] = \lambda_{t} w_{t, r}
+        combined_adaptive_regularization_weights = np.matmul(np.diag(adaptive_weights), regularization_weights)
+
+        if optimization_formula == MeshFlowStabilizer.OPTIMIZATION_FORMULA_ORIGINAL:
+            # the off-diagonal entry at cell [t, r] is written as
+            # -2 * \lambda_{t} w_{t, r}
+            off_diagonal_coefficients = -2 * combined_adaptive_regularization_weights
+
+            # the on-diagonal entry at cell [t, t] is written as
+            # 1 + 2 * \sum_{r \in \Omega_{t}, r \neq t} \lambda_{t} w_{t, r}.
+            # NOTE Since w_{t, t} = 0,
+            # we can ignore the r \neq t constraint on the sum and write the on-diagonal entry at
+            # cell [t, t] as
+            # 1 + 2 * \sum{r \in \Omega_{t}} \lambda_{t} w_{t, r}.
+            on_diagonal_coefficients = 1 + 2 * np.sum(combined_adaptive_regularization_weights, axis=1)
+        elif optimization_formula == MeshFlowStabilizer.OPTIMIZATION_FORMULA_DERIVED:
+            # combined_adaptive_regularization_weights[t, r] = \lambda_{t} w_{t, r} - \lambda_{r} w_{r, t}
+            combined_subtracted_adaptive_regularization_weights = combined_adaptive_regularization_weights - np.transpose(combined_adaptive_regularization_weights)
+            # the off-diagonal entry at cell [t, r] is written as
+            # -(\lambda_{t} w_{t, r} - \lambda_{r} w_{r, t})
+            off_diagonal_coefficients = -combined_subtracted_adaptive_regularization_weights
+
+            # the on-diagonal entry at cell [t, t] is written as
+            # 1 + \sum_{r \in \Omega_{t}, r \neq t} (\lambda_{t} w_{t, r} - \lambda_{r} w_{r, t}).
+            # NOTE Since \lambda_{t} w_{t, t} - \lambda_{t} w_{t, t} = 0,
+            # we can ignore the r \neq t constraint on the sum and write the on-diagonal entry at
+            # cell [t, t] as
+            # 1 + \sum{r \in \Omega_{t}} (\lambda_{t} w_{t, r} - \lambda_{r} w_{r, t})
+            on_diagonal_coefficients = 1 + np.sum(combined_adaptive_regularization_weights, axis=1)
+
+        # set coefficients to 0 for appropriate t, r; see https://stackoverflow.com/a/36247680
+        off_diagonal_mask = np.zeros(off_diagonal_coefficients.shape)
+        for i in range(-self.temporal_smoothing_radius, self.temporal_smoothing_radius + 1):
+            off_diagonal_mask += np.diag(np.ones(num_frames - abs(i)), i)
+        off_diagonal_coefficients = np.where(off_diagonal_mask, off_diagonal_coefficients, 0)
+
+        return (off_diagonal_coefficients, on_diagonal_coefficients)
+
+
+    def _get_adaptive_weights(self, num_frames, frame_width, frame_height, adaptive_weights_definition, homographies):
+        '''
+        Helper method for _get_jacobi_method_input.
+        Return the array of adaptive weights for use in the energy function.
+
+        Input:
+
+        * num_frames: The number of frames in the video.
+        * frame_width: the width of the video's frames.
+        * frame_height: the height of the video's frames.
+        * adaptive_weights_definition: Which definition to use for the energy function's adaptive
+            weights.
+        * homographies: A NumPy array of homographies as generated by
+            _get_unstabilized_vertex_displacements_and_homographies.
+
+        Output:
+
+        * adaptive_weights: A NumPy array of size
+            (num_frames,).
+            adaptive_weights[t] is a weight, derived from properties of the frames, applied to the
+            regularization term corresponding to the frame at index t.
+            Note that the paper does not specify the weight to apply to the last frame (which does
+            not have a velocity), so we assume it is the same as the second-to-last frame.
+            In the paper, adaptive_weights[t] is denoted as \lambda_{t}.
+        '''
+
+        if adaptive_weights_definition == MeshFlowStabilizer.ADAPTIVE_WEIGHTS_DEFINITION_ORIGINAL or adaptive_weights_definition == MeshFlowStabilizer.ADAPTIVE_WEIGHTS_DEFINITION_FLIPPED:
+            # the adaptive weights are determined by plugging the eigenvalues of each homography's
+            # affine component into a linear model
+            homography_affine_components = homographies.copy()
+            homography_affine_components[:, 2, :] = [0, 0, 1]
+            adaptive_weights = np.empty((num_frames,))
+
+            for frame_index in range(num_frames):
+                homography = homography_affine_components[frame_index]
+                sorted_eigenvalue_magnitudes = np.sort(np.abs(np.linalg.eigvals(homography)))
+
+                translational_element = math.sqrt((homography[0, 2] / frame_width) ** 2 + (homography[1, 2] / frame_height) ** 2)
+                affine_component = sorted_eigenvalue_magnitudes[-2] / sorted_eigenvalue_magnitudes[-1]
+
+                adaptive_weight_candidate_1 = -1.93 * translational_element + 0.95
+
+                if adaptive_weights_definition == MeshFlowStabilizer.ADAPTIVE_WEIGHTS_DEFINITION_ORIGINAL:
+                    adaptive_weight_candidate_2 = 5.83 * affine_component + 4.88
+                else:  # ADAPTIVE_WEIGHTS_DEFINITION_FLIPPED
+                    # TODO double-check this is the correct sign flip
+                    adaptive_weight_candidate_2 = 5.83 * affine_component - 4.88
+
+                adaptive_weights[frame_index] = max(
+                    min(adaptive_weight_candidate_1, adaptive_weight_candidate_2), 0
+                )
+        elif adaptive_weights_definition == MeshFlowStabilizer.ADAPTIVE_WEIGHTS_DEFINITION_CONSTANT_HIGH:
+            adaptive_weights = np.full((num_frames,), self.ADAPTIVE_WEIGHTS_DEFINITION_CONSTANT_HIGH_VALUE)
+        elif adaptive_weights_definition == MeshFlowStabilizer.ADAPTIVE_WEIGHTS_DEFINITION_CONSTANT_LOW:
+            adaptive_weights = np.full((num_frames,), self.ADAPTIVE_WEIGHTS_DEFINITION_CONSTANT_LOW_VALUE)
+
+        return adaptive_weights
+
+
     def _get_jacobi_method_output(self, off_diagonal_coefficients, on_diagonal_coefficients, x_start, b):
         '''
         Helper method for _get_stabilized_displacements.
@@ -727,10 +878,9 @@ class MeshFlowStabilizer:
             Specifically, off_diagonal_coefficients[i, j] = A_{i, j} where i != j, and all
             on-diagonal entries off_diagonal_coefficients[i, i] = 0.
             In the Wikipedia link, this matrix is L + U.
-        * on_diagonal_coefficients: A 2D NumPy array containing the on-diagonal entries of A.
-            Specifically, on_diagonal_coefficients[i, i] = A_{i, i}, and all off-diagonal entries
-            of on_diagonal_coefficients are 0.
-            In the Wikipedia link, this matrix is D.
+         * on_diagonal_coefficients: A 1D NumPy array containing the on-diagonal entries of A.
+            Specifically, on_diagonal_coefficients[i] = A_{i, i}.
+            In the Wikipedia link, this array is the diagonal entries of D.
         * x_start: A NumPy array containing an initial estimate for x.
         * b: A NumPy array containing the constant vector b.
 
@@ -741,8 +891,10 @@ class MeshFlowStabilizer:
 
         x = x_start.copy()
 
-        for i in range(self.optimization_num_iterations):
-            x = np.matmul(on_diagonal_coefficients, b + np.matmul(off_diagonal_coefficients, x))
+        reciprocal_on_diagonal_coefficients_matrix = np.diag(np.reciprocal(on_diagonal_coefficients))
+
+        for _ in range(self.optimization_num_iterations):
+            x = np.matmul(reciprocal_on_diagonal_coefficients_matrix, b - np.matmul(off_diagonal_coefficients, x))
 
         return x
 
@@ -1081,6 +1233,7 @@ class MeshFlowStabilizer:
                 unstabilized_features, cropped_features = self._get_all_matched_features_between_images(
                     unstabilized_frame, cropped_frame
                 )
+
                 unstabilized_to_cropped_homography, _ = cv2.findHomography(unstabilized_features, cropped_features)
 
                 # the scaling component has x-component cropped_to_unstabilized_homography[0][0]
@@ -1121,7 +1274,7 @@ class MeshFlowStabilizer:
             (vector of velocities) in the frequency domain. Specifically, it is the fraction of the
             representation's total energy that is contained within its second to sixth lowest
             frequencies. The stability score of the overall video is the average of the vertices'
-            stability scores.
+            average x- and y-stability scores.
         '''
 
         vertex_stabilized_x_dispacements_by_row_and_col, vertex_stabilized_y_dispacements_by_row_and_col = np.swapaxes(vertex_stabilized_displacements_by_frame_index, 0, 3)
@@ -1209,10 +1362,14 @@ class MeshFlowStabilizer:
 
 def main():
     # TODO get video path from command line args
-    input_path = 'videos/video-1.m4v'
-    output_path = 'videos/video-1-stabilized.m4v'
+    input_path = 'videos/data_small-shaky-5.m4v'
+    output_path = 'videos/data_small-shaky-5_stabilized.m4v'
     stabilizer = MeshFlowStabilizer()
-    cropping_ratio, distortion_score, stability_score = stabilizer.stabilize(input_path, output_path)
+    cropping_ratio, distortion_score, stability_score = stabilizer.stabilize(
+        input_path, output_path,
+        optimization_formula=MeshFlowStabilizer.OPTIMIZATION_FORMULA_ORIGINAL,
+        adaptive_weights_definition=MeshFlowStabilizer.ADAPTIVE_WEIGHTS_DEFINITION_CONSTANT_HIGH
+    )
     print('cropping ratio:', cropping_ratio)
     print('distortion score:', distortion_score)
     print('stability score:', stability_score)
