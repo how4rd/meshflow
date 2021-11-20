@@ -4,11 +4,6 @@ import numpy as np
 import statistics
 import tqdm
 
-# TODO remove when finished testing
-import sys
-np.set_printoptions(threshold=sys.maxsize)
-
-
 class MeshFlowStabilizer:
     '''
     A MeshFlowStabilizer stabilizes videos using the MeshFlow algorithm outlined in
@@ -358,10 +353,6 @@ class MeshFlowStabilizer:
         # sort each vertex's velocities by x-component, then by y-component, and use the median
         # element as the vertex's velocity.
         vertex_nearby_feature_x_velocities_by_row_col, vertex_nearby_feature_y_velocities_by_row_col = self._get_unstabilized_vertex_nearby_feature_velocities(early_frame, late_frame, early_to_late_homography)
-
-        # print('vertex_median_nearby_feature_x_velocity_by_row_col:')
-        # print('shape:', vertex_median_nearby_feature_x_velocity_by_row_col.dtype)
-        # print(vertex_median_nearby_feature_x_velocity_by_row_col)
 
         mesh_median_nearby_feature_x_velocity_by_row_col = np.array([
             [
