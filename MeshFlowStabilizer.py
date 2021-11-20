@@ -1073,24 +1073,28 @@ class MeshFlowStabilizer:
         cropping_ratios = np.empty((num_frames), dtype=np.float32)
         distortion_scores = np.empty((num_frames), dtype=np.float32)
 
-        for frame_index, (unstabilized_frame, cropped_frame) in enumerate(zip(unstabilized_frames, cropped_frames)):
-            unstabilized_features, cropped_features = self._get_all_matched_features_between_images(
-                unstabilized_frame, cropped_frame
-            )
-            unstabilized_to_cropped_homography, _ = cv2.findHomography(unstabilized_features, cropped_features)
+        with tqdm.trange(num_frames) as t:
+            t.set_description('Computing cropping ratio and distortion score')
+            for frame_index in t:
+                unstabilized_frame = unstabilized_frames[frame_index]
+                cropped_frame = cropped_frames[frame_index]
+                unstabilized_features, cropped_features = self._get_all_matched_features_between_images(
+                    unstabilized_frame, cropped_frame
+                )
+                unstabilized_to_cropped_homography, _ = cv2.findHomography(unstabilized_features, cropped_features)
 
-            # the scaling component has x-component cropped_to_unstabilized_homography[0][0]
-            # and y-component cropped_to_unstabilized_homography[1][1],
-            # so the fraction of the enlarged video that actually fits in the frame is
-            # 1 / (cropped_to_unstabilized_homography[0][0] * cropped_to_unstabilized_homography[1][1])
-            cropping_ratio = 1 / (unstabilized_to_cropped_homography[0][0] * unstabilized_to_cropped_homography[1][1])
-            cropping_ratios[frame_index] = cropping_ratio
+                # the scaling component has x-component cropped_to_unstabilized_homography[0][0]
+                # and y-component cropped_to_unstabilized_homography[1][1],
+                # so the fraction of the enlarged video that actually fits in the frame is
+                # 1 / (cropped_to_unstabilized_homography[0][0] * cropped_to_unstabilized_homography[1][1])
+                cropping_ratio = 1 / (unstabilized_to_cropped_homography[0][0] * unstabilized_to_cropped_homography[1][1])
+                cropping_ratios[frame_index] = cropping_ratio
 
-            affine_component = np.copy(unstabilized_to_cropped_homography)
-            affine_component[2] = [0, 0, 1]
-            eigenvalue_magnitudes = np.sort(np.abs(np.linalg.eigvals(affine_component)))
-            distortion_score = eigenvalue_magnitudes[-2] / eigenvalue_magnitudes[-1]
-            distortion_scores[frame_index] = distortion_score
+                affine_component = np.copy(unstabilized_to_cropped_homography)
+                affine_component[2] = [0, 0, 1]
+                eigenvalue_magnitudes = np.sort(np.abs(np.linalg.eigvals(affine_component)))
+                distortion_score = eigenvalue_magnitudes[-2] / eigenvalue_magnitudes[-1]
+                distortion_scores[frame_index] = distortion_score
 
         return (np.mean(cropping_ratios), np.min(distortion_scores))
 
