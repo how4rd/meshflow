@@ -1084,8 +1084,8 @@ class MeshFlowStabilizer:
 
 def main():
     # TODO get video path from command line args
-    input_path = 'videos/original-paper-videos/video-1.m4v'
-    output_path = 'videos/original-paper-videos/video-1-stabilized.m4v'
+    input_path = 'videos/video-1.m4v'
+    output_path = 'videos/video-1-stabilized.m4v'
     stabilizer = MeshFlowStabilizer()
     stabilizer.stabilize(input_path, output_path)
 
