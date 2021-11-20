@@ -1143,7 +1143,7 @@ class MeshFlowStabilizer:
         x_stability_score = np.mean(x_stability_scores_by_row_and_col)
         y_stability_score = np.mean(y_stability_scores_by_row_and_col)
 
-        return np.mean(x_stability_score, y_stability_score)
+        return (x_stability_score + y_stability_score) / 2.0
 
 
     def _display_unstablilized_and_stabilized_video_loop(self, num_frames, frames_per_second, unstabilized_frames, stabilized_frames):
