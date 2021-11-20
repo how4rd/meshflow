@@ -83,6 +83,23 @@ class MeshFlowStabilizer:
         Output:
 
         (The stabilized video is saved to output_path.)
+
+        In addition, the function returns a tuple of the following items in order.
+
+        * cropping_ratio: The cropping ratio of the stabilized video. Per the original paper, the
+            cropping ratio of each frame is the scale component of its unstabilized-to-cropped
+            homography, and the cropping ratio of the overall video is the average of the frames'
+            cropping ratios.
+        * distortion_score: The distortion score of the stabilized video. Per the original paper,
+            the distortion score of each frame is ratio of the two largest eigenvalues of the
+            affine part of its unstabilized-to-cropped homography, and the distortion score of the
+            overall video is the greatest of its frames' distortion scores.
+        * stability_score: The stability score of the stabilized video. Per the original paper, the
+            stability score for each vertex is derived from the representation of its vertex profile
+            (vector of velocities) in the frequency domain. Specifically, it is the fraction of the
+            representation's total energy that is contained within its second to sixth lowest
+            frequencies. The stability score of the overall video is the average of the vertices'
+            stability scores.
         '''
 
         unstabilized_frames, num_frames, frames_per_second, codec = self._get_unstabilized_frames_and_video_features(input_path)
@@ -95,8 +112,13 @@ class MeshFlowStabilizer:
         )
         cropped_frames = self._crop_frames(stabilized_frames, crop_boundaries)
 
+        cropping_ratio, distortion_score = self._compute_cropping_ratio_and_distortion_score(num_frames, unstabilized_frames, cropped_frames)
+        stability_score = self._compute_stability_score(num_frames, vertex_stabilized_displacements_by_frame_index)
+
         self._write_stabilized_video(output_path, num_frames, frames_per_second, codec, cropped_frames)
         self._display_unstablilized_and_stabilized_video_loop(num_frames, frames_per_second, unstabilized_frames, cropped_frames)
+
+        return (cropping_ratio, distortion_score, stability_score)
 
 
     def _get_unstabilized_frames_and_video_features(self, input_path):
@@ -1021,6 +1043,105 @@ class MeshFlowStabilizer:
         return cropped_frames
 
 
+    def _compute_cropping_ratio_and_distortion_score(self, num_frames, unstabilized_frames, cropped_frames):
+        '''
+        Helper function for stabilize.
+
+        Compute the cropping ratio and distortion score for the given stabilization using the
+        definitions of these metrics in the original paper.
+
+        Input:
+
+        * num_frames: The number of frames in the video.
+        * unstabilized_frames: A list of the unstabilized frames, each represented as a NumPy array.
+        * stabilized_frames: A list of the stabilized frames, each represented as a NumPy array.
+
+        Output:
+
+        A tuple of the following items in order.
+
+        * cropping_ratio: The cropping ratio of the stabilized video. Per the original paper, the
+            cropping ratio of each frame is the scale component of its unstabilized-to-cropped
+            homography, and the cropping ratio of the overall video is the average of the frames'
+            cropping ratios.
+        * distortion_score: The distortion score of the stabilized video. Per the original paper,
+            the distortion score of each frame is ratio of the two largest eigenvalues of the
+            affine part of its unstabilized-to-cropped homography, and the distortion score of the
+            overall video is the greatest of its frames' distortion scores.
+        '''
+
+        cropping_ratios = np.empty((num_frames), dtype=np.float32)
+        distortion_scores = np.empty((num_frames), dtype=np.float32)
+
+        for frame_index, (unstabilized_frame, cropped_frame) in enumerate(zip(unstabilized_frames, cropped_frames)):
+            unstabilized_features, cropped_features = self._get_all_matched_features_between_images(
+                unstabilized_frame, cropped_frame
+            )
+            unstabilized_to_cropped_homography, _ = cv2.findHomography(unstabilized_features, cropped_features)
+
+            # the scaling component has x-component cropped_to_unstabilized_homography[0][0]
+            # and y-component cropped_to_unstabilized_homography[1][1],
+            # so the fraction of the enlarged video that actually fits in the frame is
+            # 1 / (cropped_to_unstabilized_homography[0][0] * cropped_to_unstabilized_homography[1][1])
+            cropping_ratio = 1 / (unstabilized_to_cropped_homography[0][0] * unstabilized_to_cropped_homography[1][1])
+            cropping_ratios[frame_index] = cropping_ratio
+
+            affine_component = np.copy(unstabilized_to_cropped_homography)
+            affine_component[2] = [0, 0, 1]
+            eigenvalue_magnitudes = np.sort(np.abs(np.linalg.eigvals(affine_component)))
+            distortion_score = eigenvalue_magnitudes[-2] / eigenvalue_magnitudes[-1]
+            distortion_scores[frame_index] = distortion_score
+
+        return (np.mean(cropping_ratios), np.min(distortion_scores))
+
+
+
+    def _compute_stability_score(self, num_frames, vertex_stabilized_displacements_by_frame_index):
+        '''
+        Helper function for stabilize.
+
+        Compute the stability score for the given stabilization using the definitions of these
+        metrics in the original paper.
+
+        Input:
+
+        * num_frames: The number of frames in the video.
+        * vertex_stabilized_displacements_by_frame_index: A NumPy array containing the
+            stabilized residual displacements of each vertex in the MeshFlow mesh, as generated by
+            _get_stabilized_vertex_displacements.
+
+        Output:
+
+        * stability_score: The stability score of the stabilized video. Per the original paper, the
+            stability score for each vertex is derived from the representation of its vertex profile
+            (vector of velocities) in the frequency domain. Specifically, it is the fraction of the
+            representation's total energy that is contained within its second to sixth lowest
+            frequencies. The stability score of the overall video is the average of the vertices'
+            stability scores.
+        '''
+
+        vertex_stabilized_x_dispacements_by_row_and_col, vertex_stabilized_y_dispacements_by_row_and_col = np.swapaxes(vertex_stabilized_displacements_by_frame_index, 0, 3)
+        vertex_x_profiles_by_row_and_col = np.diff(vertex_stabilized_x_dispacements_by_row_and_col)
+        vertex_y_profiles_by_row_and_col = np.diff(vertex_stabilized_y_dispacements_by_row_and_col)
+
+        vertex_x_freq_energies_by_row_and_col = np.square(np.abs(np.fft.fft(vertex_x_profiles_by_row_and_col)))
+        vertex_y_freq_energies_by_row_and_col = np.square(np.abs(np.fft.fft(vertex_y_profiles_by_row_and_col)))
+
+        vertex_x_total_freq_energy_by_row_and_col = np.sum(vertex_x_freq_energies_by_row_and_col, axis=2)
+        vertex_y_total_freq_energy_by_row_and_col = np.sum(vertex_y_freq_energies_by_row_and_col, axis=2)
+
+        vertex_x_low_freq_energy_by_row_and_col = np.sum(vertex_x_freq_energies_by_row_and_col[:, :, 1:6], axis=2)
+        vertex_y_low_freq_energy_by_row_and_col = np.sum(vertex_y_freq_energies_by_row_and_col[:, :, 1:6], axis=2)
+
+        x_stability_scores_by_row_and_col = vertex_x_low_freq_energy_by_row_and_col / vertex_x_total_freq_energy_by_row_and_col
+        y_stability_scores_by_row_and_col = vertex_y_low_freq_energy_by_row_and_col / vertex_y_total_freq_energy_by_row_and_col
+
+        x_stability_score = np.mean(x_stability_scores_by_row_and_col)
+        y_stability_score = np.mean(y_stability_scores_by_row_and_col)
+
+        return np.mean(x_stability_score, y_stability_score)
+
+
     def _display_unstablilized_and_stabilized_video_loop(self, num_frames, frames_per_second, unstabilized_frames, stabilized_frames):
         '''
         Helper function for stabilize.
@@ -1087,7 +1208,10 @@ def main():
     input_path = 'videos/video-1.m4v'
     output_path = 'videos/video-1-stabilized.m4v'
     stabilizer = MeshFlowStabilizer()
-    stabilizer.stabilize(input_path, output_path)
+    cropping_ratio, distortion_score, stability_score = stabilizer.stabilize(input_path, output_path)
+    print('cropping ratio:', cropping_ratio)
+    print('distortion score:', distortion_score)
+    print('stability score:', stability_score)
 
 
 if __name__ == '__main__':
