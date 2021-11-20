@@ -88,14 +88,15 @@ class MeshFlowStabilizer:
         unstabilized_frames, num_frames, frames_per_second, codec = self._get_unstabilized_frames_and_video_features(input_path)
         vertex_unstabilized_displacements_by_frame_index, homographies = self._get_unstabilized_vertex_displacements_and_homographies(num_frames, unstabilized_frames)
         vertex_stabilized_displacements_by_frame_index = self._get_stabilized_vertex_displacements(num_frames, vertex_unstabilized_displacements_by_frame_index, homographies)
-        stabilized_frames = self._get_stabilized_frames(
+        stabilized_frames, crop_boundaries = self._get_stabilized_frames_and_crop_boundaries(
             num_frames, unstabilized_frames,
             vertex_unstabilized_displacements_by_frame_index,
             vertex_stabilized_displacements_by_frame_index
         )
+        cropped_frames = self._crop_frames(stabilized_frames, crop_boundaries)
 
-        self._write_stabilized_video(output_path, num_frames, frames_per_second, codec, stabilized_frames)
-        self._display_unstablilized_and_stabilized_video_loop(num_frames, frames_per_second, unstabilized_frames, stabilized_frames)
+        self._write_stabilized_video(output_path, num_frames, frames_per_second, codec, cropped_frames)
+        self._display_unstablilized_and_stabilized_video_loop(num_frames, frames_per_second, unstabilized_frames, cropped_frames)
 
 
     def _get_unstabilized_frames_and_video_features(self, input_path):
@@ -726,7 +727,7 @@ class MeshFlowStabilizer:
 
     def _get_vertex_x_y(self, frame_width, frame_height):
         '''
-        Helper method for _get_stabilized_frames and _get_unstabilized_vertex_velocities.
+        Helper method for _get_stabilized_frames_and_crop_boundaries_and_crop_boundaries and _get_unstabilized_vertex_velocities.
         Return a NumPy array that maps [row, col] coordinates to [x, y] coordinates.
 
         Input:
@@ -752,12 +753,13 @@ class MeshFlowStabilizer:
         ], dtype=np.float32)
 
 
-    def _get_stabilized_frames(self, num_frames, unstabilized_frames, vertex_unstabilized_displacements_by_frame_index, vertex_stabilized_displacements_by_frame_index):
+    def _get_stabilized_frames_and_crop_boundaries(self, num_frames, unstabilized_frames, vertex_unstabilized_displacements_by_frame_index, vertex_stabilized_displacements_by_frame_index):
         '''
         Helper method for stabilize.
 
         Return stabilized copies of the given unstabilized frames warping them according to the
-        given transformation data.
+        given transformation data, as well as boundaries representing how to crop these stabilized
+        frames.
 
         Inspired by the Python MeshFlow implementation available at
         https://github.com/sudheerachary/Mesh-Flow-Video-Stabilization/blob/5780fe750cf7dc35e5cfcd0b4a56d408ce3a9e53/src/MeshFlow.py#L117.
@@ -775,8 +777,13 @@ class MeshFlowStabilizer:
 
         Output:
 
+        A tuple of the following items in order.
+
         * stabilized_frames: A list of the frames in the stabilized video, each represented as a
             NumPy array.
+        * crop_boundaries: A tuple of the form
+            (left_crop_x, top_crop_y, right_crop_x, bottom_crop_y)
+            representing the x- and y-boundaries (all inclusive) of the cropped video.
         '''
 
         frame_height, frame_width = unstabilized_frames[0].shape[:2]
@@ -824,6 +831,15 @@ class MeshFlowStabilizer:
         frame_stabilized_y_x_to_unstabilized_y_template = np.full((frame_height, frame_width), frame_height + 1)
         frame_stabilized_y_x_to_stabilized_x_y_template = np.swapaxes(np.indices((frame_width, frame_height), dtype=np.float32), 0, 2)
         frame_stabilized_x_y_template = frame_stabilized_y_x_to_stabilized_x_y_template.reshape((-1, 1, 2))
+
+        # left_crop_x_by_frame_index[frame_index] contains the x-value where the left edge
+        # where frame frame_index would be cropped to produce a rectangular image;
+        # right_crop_x_by_frame_index, top_crop_y_by_frame_index, and
+        # bottom_crop_y_by_frame_index are analogous
+        left_crop_x_by_frame_index = np.full(num_frames, 0)
+        right_crop_x_by_frame_index = np.full(num_frames, frame_width - 1)
+        top_crop_y_by_frame_index = np.full(num_frames, 0)
+        bottom_crop_y_by_frame_index = np.full(num_frames, frame_height - 1)
 
         stabilized_frames = []
         with tqdm.trange(num_frames) as t:
@@ -899,9 +915,110 @@ class MeshFlowStabilizer:
                     borderValue=self.color_outside_image_area_bgr
                 )
 
+                # crop the frame
+                # left edge: the maximum stabilized x_s that corresponds to the unstabilized
+                # x_u = 0
+
+                stabilized_image_x_matching_unstabilized_left_edge = np.where(np.abs(frame_stabilized_y_x_to_unstabilized_x - 0) < 1)[1]
+                if stabilized_image_x_matching_unstabilized_left_edge.size > 0:
+                    left_crop_x_by_frame_index[frame_index] = np.max(stabilized_image_x_matching_unstabilized_left_edge)
+
+                # right edge: the minimum stabilized x_s that corresponds to the stabilized
+                # x_u = frame_width - 1
+
+                stabilized_image_x_matching_unstabilized_right_edge = np.where(np.abs(frame_stabilized_y_x_to_unstabilized_x - (frame_width - 1)) < 1)[1]
+                if stabilized_image_x_matching_unstabilized_right_edge.size > 0:
+                    right_crop_x_by_frame_index[frame_index] = np.min(stabilized_image_x_matching_unstabilized_right_edge)
+
+                # top edge: the maximum stabilized y_s that corresponds to the unstabilized
+                # y_u = 0
+
+                stabilized_image_y_matching_unstabilized_top_edge = np.where(np.abs(frame_stabilized_y_x_to_unstabilized_y - 0) < 1)[0]
+                if stabilized_image_y_matching_unstabilized_top_edge.size > 0:
+                    top_crop_y_by_frame_index[frame_index] = np.max(stabilized_image_y_matching_unstabilized_top_edge)
+
+                # bottom edge: the minimum stabilized y_s that corresponds to the unstabilized
+                # y_u = frame_height - 1
+
+                stabilized_image_y_matching_unstabilized_bottom_edge = np.where(np.abs(frame_stabilized_y_x_to_unstabilized_y - (frame_height - 1)) < 1)[0]
+                if stabilized_image_y_matching_unstabilized_bottom_edge.size > 0:
+                    bottom_crop_y_by_frame_index[frame_index] = np.min(stabilized_image_y_matching_unstabilized_bottom_edge)
+
+                # left_line_start_point = np.array([stabilized_left_crop_x_by_frame_index[frame_index], 0], dtype=np.int32)
+                # left_line_end_point = np.array([stabilized_left_crop_x_by_frame_index[frame_index], frame_height - 1], dtype=np.int32)
+                # stabilized_frame = cv2.line(stabilized_frame, left_line_start_point, left_line_end_point, (255, 0, 0))
+
+                # right_line_start_point = np.array([stabilized_right_crop_x_by_frame_index[frame_index], 0], dtype=np.int32)
+                # right_line_end_point = np.array([stabilized_right_crop_x_by_frame_index[frame_index], frame_height - 1], dtype=np.int32)
+                # stabilized_frame = cv2.line(stabilized_frame, right_line_start_point, right_line_end_point, (255, 0, 0))
+
+                # top_line_start_point = np.array([0, stabilized_top_crop_y_by_frame_index[frame_index]], dtype=np.int32)
+                # top_line_end_point = np.array([frame_width - 1, stabilized_top_crop_y_by_frame_index[frame_index]], dtype=np.int32)
+                # stabilized_frame = cv2.line(stabilized_frame, top_line_start_point, top_line_end_point, (255, 0, 0))
+
+                # bottom_line_start_point = np.array([0, stabilized_bottom_crop_y_by_frame_index[frame_index]], dtype=np.int32)
+                # bottom_line_end_point = np.array([frame_width - 1, stabilized_bottom_crop_y_by_frame_index[frame_index]], dtype=np.int32)
+                # stabilized_frame = cv2.line(stabilized_frame, bottom_line_start_point, bottom_line_end_point, (255, 0, 0))
+
+
                 stabilized_frames.append(stabilized_frame)
 
-        return stabilized_frames
+        # the final video crop is the one that would adequately crop every single frame
+        left_crop_x = np.max(left_crop_x_by_frame_index)
+        right_crop_x = np.min(right_crop_x_by_frame_index)
+        top_crop_y = np.max(top_crop_y_by_frame_index)
+        bottom_crop_y = np.min(bottom_crop_y_by_frame_index)
+
+        return (stabilized_frames, (left_crop_x, top_crop_y, right_crop_x, bottom_crop_y))
+
+
+    def _crop_frames(self, uncropped_frames, crop_boundaries):
+        '''
+        Return copies of the given frames that have been cropped according to the given crop
+        boundaries.
+
+        Input:
+
+        * uncropped_frames: A list of the frames to crop, each represented as a NumPy array.
+        * crop_boundaries: A tuple of the form
+            (left_crop_x, top_crop_y, right_crop_x, bottom_crop_y)
+            representing the x- and y-boundaries (all inclusive) of the cropped video.
+
+        Output:
+
+        * cropped_frames: A list of the frames cropped according to the crop boundaries.
+
+        '''
+
+        frame_height, frame_width = uncropped_frames[0].shape[:2]
+        left_crop_x, top_crop_y, right_crop_x, bottom_crop_y = crop_boundaries
+
+        # There are two ways to scale up the image: increase its width to fill the original width,
+        # scaling the height appropriately, or increase its height to fill the original height,
+        # scaling the width appropriately. At least one of these options will result in the image
+        # completely filling the frame.
+        uncropped_aspect_ratio = frame_width / frame_height
+        cropped_aspect_ratio = (right_crop_x + 1 - left_crop_x) / (bottom_crop_y + 1 - top_crop_y)
+
+        if cropped_aspect_ratio >= uncropped_aspect_ratio:
+            # the cropped image is proportionally wider than the original, so to completely fill the
+            # frame, it must be scaled so its height matches the frame height
+            uncropped_to_cropped_scale_factor = frame_height / (bottom_crop_y + 1 - top_crop_y)
+        else:
+            # the cropped image is proportionally taller than the original, so to completely fill
+            # the frame, it must be scaled so its width matches the frame width
+            uncropped_to_cropped_scale_factor = frame_width / (right_crop_x + 1 - left_crop_x)
+
+        cropped_frames = []
+        for uncropped_frame in uncropped_frames:
+            cropped_frames.append(cv2.resize(
+                uncropped_frame[top_crop_y:bottom_crop_y+1, left_crop_x:right_crop_x+1],
+                (frame_width, frame_height),
+                fx=uncropped_to_cropped_scale_factor,
+                fy=uncropped_to_cropped_scale_factor
+            ))
+
+        return cropped_frames
 
 
     def _display_unstablilized_and_stabilized_video_loop(self, num_frames, frames_per_second, unstabilized_frames, stabilized_frames):
@@ -912,12 +1029,10 @@ class MeshFlowStabilizer:
 
         Input:
 
-        * unstabilized_frames: A NumPy array of the video's unstabilized frames as generated by
-            _get_unstabilized_vertex_displacements_and_homographies.
-        * stabilized_frames: A NumPy array of the video's unstabilized frames as generated by
-            _get_stabilized_vertex_displacements.
         * num_frames: The number of frames in the video.
         * frames_per_second: The video framerate in frames per second.
+        * unstabilized_frames: A list of the unstabilized frames, each represented as a NumPy array.
+        * stabilized_frames: A list of the stabilized frames, each represented as a NumPy array.
 
         Output:
 
