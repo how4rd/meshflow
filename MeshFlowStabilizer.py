@@ -330,48 +330,46 @@ class MeshFlowStabilizer:
 
         # applying this homography to a coordinate in the early frame maps it to where it will be
         # in the late frame, assuming the point is not undergoing motion
-        early_features, late_features = self._get_all_matched_features_between_images(
-            early_frame, late_frame
-        )
-        early_to_late_homography, _ = cv2.findHomography(early_features, late_features)
+        early_features, late_features, early_to_late_homography = self._get_matched_features_and_homography(early_frame, late_frame)
 
         # Each vertex started in the early frame at a position given by vertex_x_y_by_row_coland.
         # If it has no velocity relative to the scene (i.e., the vertex is shaking with it), then to
         # get its position in the late frame, we apply early_to_late_homography to its early
         # position.
-        # Its velocity takes it from the early position to its late position.
+        # The displacement between these positions is its global motion.
         frame_height, frame_width, = early_frame.shape[:2]
         vertex_x_y = self._get_vertex_x_y(frame_width, frame_height)
-        vertex_velocities = cv2.perspectiveTransform(vertex_x_y, early_to_late_homography) - vertex_x_y
-        vertex_velocities_by_row_col = np.reshape(vertex_velocities, (self.mesh_row_count + 1, self.mesh_col_count + 1, 2))
-        vertex_x_velocities_by_row_col = vertex_velocities_by_row_col[:, :, 0]
-        vertex_y_velocities_by_row_col = vertex_velocities_by_row_col[:, :, 1]
+        vertex_global_velocities = cv2.perspectiveTransform(vertex_x_y, early_to_late_homography) - vertex_x_y
+        vertex_global_velocities_by_row_col = np.reshape(vertex_global_velocities, (self.mesh_row_count + 1, self.mesh_col_count + 1, 2))
+        vertex_global_x_velocities_by_row_col = vertex_global_velocities_by_row_col[:, :, 0]
+        vertex_global_y_velocities_by_row_col = vertex_global_velocities_by_row_col[:, :, 1]
 
         # In addition to the above motion (which moves each vertex to its spot in the mesh in
-        # late_frame), each vertex may undergo additional motion to match its nearby features.
+        # late_frame), each vertex may undergo additional residual motion to match its nearby
+        # features.
         # After gathering these velocities, perform first median filter:
         # sort each vertex's velocities by x-component, then by y-component, and use the median
         # element as the vertex's velocity.
-        vertex_nearby_feature_x_velocities_by_row_col, vertex_nearby_feature_y_velocities_by_row_col = self._get_unstabilized_vertex_nearby_feature_velocities(early_frame, late_frame, early_to_late_homography)
+        vertex_nearby_feature_residual_x_velocities_by_row_col, vertex_nearby_feature_residual_y_velocities_by_row_col = self._get_vertex_nearby_feature_residual_velocities(frame_width, frame_height, early_features, late_features, early_to_late_homography)
 
-        mesh_median_nearby_feature_x_velocity_by_row_col = np.array([
+        vertex_residual_x_velocities_by_row_col = np.array([
             [
                 statistics.median(x_velocities)
                 if x_velocities else 0
                 for x_velocities in row
             ]
-            for row in vertex_nearby_feature_x_velocities_by_row_col
+            for row in vertex_nearby_feature_residual_x_velocities_by_row_col
         ])
-        mesh_median_nearby_feature_y_velocity_by_row_col = np.array([
+        vertex_residual_y_velocities_by_row_col = np.array([
             [
                 statistics.median(y_velocities)
                 if y_velocities else 0
                 for y_velocities in row
             ]
-            for row in vertex_nearby_feature_y_velocities_by_row_col
+            for row in vertex_nearby_feature_residual_y_velocities_by_row_col
         ])
-        vertex_x_velocities_by_row_col += mesh_median_nearby_feature_x_velocity_by_row_col
-        vertex_y_velocities_by_row_col += mesh_median_nearby_feature_y_velocity_by_row_col
+        vertex_x_velocities_by_row_col = (vertex_global_x_velocities_by_row_col + vertex_residual_x_velocities_by_row_col).astype(np.float32)
+        vertex_y_velocities_by_row_col = (vertex_global_y_velocities_by_row_col + vertex_residual_y_velocities_by_row_col).astype(np.float32)
 
         # Perform second median filter:
         # replace each vertex's velocity with the median velocity of its neighbors.
@@ -381,7 +379,7 @@ class MeshFlowStabilizer:
         return (vertex_smoothed_velocities_by_row_col, early_to_late_homography)
 
 
-    def _get_unstabilized_vertex_nearby_feature_velocities(self, early_frame, late_frame, early_to_late_homography):
+    def _get_vertex_nearby_feature_residual_velocities(self, frame_width, frame_height, early_features, late_features, early_to_late_homography):
         '''
         Helper method for _get_unstabilized_vertex_velocities.
 
@@ -390,8 +388,20 @@ class MeshFlowStabilizer:
 
         Input:
 
-        * early_frame: A NumPy array representing the frame before late_frame.
-        * late_frame: A NumPy array representing the frame after early_frame.
+        * frame_width: the width of the windows' frames.
+        * frame_height: the height of the windows' frames.
+        * early_features: A CV_32FC2 array (see https://stackoverflow.com/a/47617999) of positions
+            containing the coordinates of each non-outlying feature in early_window that was
+            successfully tracked in late_window. These coordinates are expressed relative to the
+            frame, not the window. If fewer than
+            self.homography_min_number_corresponding_features such features were found,
+            early_features is None.
+        * late_features: A CV_32FC2 array (see https://stackoverflow.com/a/47617999) of positions
+            containing the coordinates of each non-outlying feature in late_window that was
+            successfully tracked from early_window. These coordinates are expressed relative to the
+            frame, not the window. If fewer than
+            self.homography_min_number_corresponding_features such features were found,
+            late_features is None.
         * early_to_late_homography: A homography matrix that maps a point in early_frame to its
             corresponding location in late_frame, assuming the point is not undergoing motion
 
@@ -407,10 +417,6 @@ class MeshFlowStabilizer:
             the x-velocities of all the features nearby the vertex at the given row and col.
         '''
 
-        frame_height, frame_width = early_frame.shape[:2]
-        window_width = math.ceil(frame_width / self.mesh_outlier_subregion_col_count)
-        window_height = math.ceil(frame_height / self.mesh_outlier_subregion_row_count)
-
         vertex_nearby_feature_x_velocities_by_row_col = [
             [[] for _ in range(self.mesh_col_count + 1)]
             for _ in range(self.mesh_row_count + 1)
@@ -420,208 +426,115 @@ class MeshFlowStabilizer:
             for _ in range(self.mesh_row_count + 1)
         ]
 
-        # TODO parallelize
-        for window_left_x in range(0, frame_width, window_width):
-            for window_top_y in range(0, frame_height, window_height):
-                early_window = early_frame[window_top_y:window_top_y+window_height,
-                                           window_left_x:window_left_x+window_width]
-                late_window = late_frame[window_top_y:window_top_y+window_height,
-                                         window_left_x:window_left_x+window_width]
-                window_offset = [window_left_x, window_top_y]
+        if early_features is not None:
+            # calculate features' velocities; see https://stackoverflow.com/a/44409124 for
+            # combining the positions and velocities into one matrix
 
-                self._place_window_feature_velocities_into_list(
-                    early_window, late_window, early_to_late_homography,
-                    window_offset, frame_width, frame_height,
-                    vertex_nearby_feature_x_velocities_by_row_col,
-                    vertex_nearby_feature_y_velocities_by_row_col
-                )
+            # If a point were undergoing no motion, then its position in the late frame would be
+            # found by applying early_to_late_homography to its position in the early frame.
+            # The point's additional motion is what takes it from that position to its actual
+            # position.
+            feature_residual_velocities = late_features - cv2.perspectiveTransform(early_features, early_to_late_homography)
+            feature_positions_and_residual_velocities = np.c_[early_features, feature_residual_velocities]
+
+            # apply features' velocities to nearby mesh vertices
+            for feature_position_and_residual_velocity in feature_positions_and_residual_velocities:
+                feature_x, feature_y, feature_residual_x_velocity, feature_residual_y_velocity = feature_position_and_residual_velocity[0]
+                feature_row = (feature_y / frame_height) * self.mesh_row_count
+                feature_col = (feature_x / frame_width) * self.mesh_col_count
+
+                # Draw an ellipse around each feature
+                # of width self.feature_ellipse_col_count
+                # and height self.feature_ellipse_row_count,
+                # and apply the feature's velocity to all mesh vertices that fall within this
+                # ellipse.
+                # To do this, we can iterate through all the rows that the ellipse covers.
+                # For each row, we can use the equation for an ellipse centered on the
+                # feature to determine which columns the ellipse covers. The resulting
+                # (row, column) pairs correspond to the vertices in the ellipse.
+                ellipse_top_row_inclusive = max(0, math.ceil(feature_row - self.feature_ellipse_row_count / 2))
+                ellipse_bottom_row_exclusive = 1 + min(self.mesh_row_count, math.floor(feature_row + self.feature_ellipse_row_count / 2))
+
+                for vertex_row in range(ellipse_top_row_inclusive, ellipse_bottom_row_exclusive):
+
+                    # half-width derived from ellipse equation
+                    ellipse_slice_half_width = self.feature_ellipse_col_count * math.sqrt((1/4) - ((vertex_row - feature_row) / self.feature_ellipse_row_count) ** 2)
+                    ellipse_left_col_inclusive = max(0, math.ceil(feature_col - ellipse_slice_half_width))
+                    ellipse_right_col_exclusive = 1 + min(self.mesh_col_count, math.floor(feature_col + ellipse_slice_half_width))
+
+                    for vertex_col in range(ellipse_left_col_inclusive, ellipse_right_col_exclusive):
+                        vertex_nearby_feature_x_velocities_by_row_col[vertex_row][vertex_col].append(feature_residual_x_velocity)
+                        vertex_nearby_feature_y_velocities_by_row_col[vertex_row][vertex_col].append(feature_residual_y_velocity)
 
         return (vertex_nearby_feature_x_velocities_by_row_col, vertex_nearby_feature_y_velocities_by_row_col)
 
 
-    def _place_window_feature_velocities_into_list(self, early_window, late_window, early_to_late_homography, window_offset, frame_width, frame_height, vertex_nearby_feature_x_velocities_by_row_col, vertex_nearby_feature_y_velocities_by_row_col):
+    def _get_matched_features_and_homography(self, early_frame, late_frame):
         '''
-        Helper method for _get_unstabilized_vertex_nearby_feature_velocities.
-
-        Update mesh_nearby_feature_velocities so it contains the velocities of features nearby mesh
-        vertices in the window, assuming the given homography has been applied.
-
-        Input:
-
-        * early_window: A NumPy array (or a view into one) representing a subsection of the pixels
-            in the frame before late_window.
-        * late_window: A NumPy array (or a view into one) representing a subsection of the pixels
-            in the frame after early_window.
-        * early_to_late_homography: A homography matrix that maps a point in early_frame to its
-            corresponding location in late_frame, assuming the point is not undergoing motion
-        * offset_location: A tuple (x, y) representing the offset of the windows within their frame,
-            relative to the frame's top left corner.
-        * frame_width: the width of the windows' frames.
-        * frame_height: the height of the windows' frames.
-        * vertex_nearby_feature_x_velocities_by_row_col: A not-yet-completed list
-            where entry vertex_nearby_feature_x_velocities_by_row_col[row, col] contains a list of
-            the x-velocities of all the features nearby the vertex at the given row and col.
-        * vertex_nearby_feature_y_velocities_by_row_col: A not-yet-completed list
-            where entry vertex_nearby_feature_y_velocities_by_row_col[row, col] contains a list of
-            the x-velocities of all the features nearby the vertex at the given row and col.
-
-        Output:
-
-        (Both vertex_nearby_feature_x_velocities_by_row_col and
-        vertex_nearby_feature_y_velocities_by_row_col
-        have been updated to include values for all the mesh vertices that fall within this window.)
-        '''
-
-        # gather features
-        early_window_feature_positions, late_window_feature_positions = self._get_feature_positions_in_window(
-            early_window, late_window, window_offset
-        )
-
-        if early_window_feature_positions is None:
-            return
-
-        # calculate features' velocities; see https://stackoverflow.com/a/44409124 for
-        # combining the positions and velocities into one matrix
-
-        # If a point were undergoing no motion, then its position in the late frame would be found
-        # by applying early_to_late_homography to its position in the early frame.
-        # The point's additional motion is what takes it from that position to its actual position.
-        current_window_velocities = late_window_feature_positions - cv2.perspectiveTransform(early_window_feature_positions, early_to_late_homography)
-        current_window_positions_velocities = np.c_[early_window_feature_positions, current_window_velocities]
-
-        # apply features' velocities to nearby mesh vertices
-        for feature_position_and_velocity in current_window_positions_velocities:
-            feature_x, feature_y, feature_x_velocity, feature_y_velocity = feature_position_and_velocity[0]
-            feature_row = (feature_y / frame_height) * self.mesh_row_count
-            feature_col = (feature_x / frame_width) * self.mesh_col_count
-
-            # Draw an ellipse around each feature
-            # of width self.feature_ellipse_col_count
-            # and height self.feature_ellipse_row_count,
-            # and apply the feature's velocity to all mesh vertices that fall within this
-            # ellipse.
-            # To do this, we can iterate through all the rows that the ellipse covers.
-            # For each row, we can use the equation for an ellipse centered on the
-            # feature to determine which columns the ellipse covers. The resulting
-            # (row, column) pairs correspond to the vertices in the ellipse.
-            ellipse_top_row_inclusive = max(0, math.ceil(feature_row - self.feature_ellipse_row_count / 2))
-            ellipse_bottom_row_exclusive = 1 + min(self.mesh_row_count, math.floor(feature_row + self.feature_ellipse_row_count / 2))
-
-            for vertex_row in range(ellipse_top_row_inclusive, ellipse_bottom_row_exclusive):
-
-                # half-width derived from ellipse equation
-                ellipse_slice_half_width = self.feature_ellipse_col_count * math.sqrt((1/4) - ((vertex_row - feature_row) / self.feature_ellipse_row_count) ** 2)
-                ellipse_left_col_inclusive = max(0, math.ceil(feature_col - ellipse_slice_half_width))
-                ellipse_right_col_exclusive = 1 + min(self.mesh_col_count, math.floor(feature_col + ellipse_slice_half_width))
-
-                for vertex_col in range(ellipse_left_col_inclusive, ellipse_right_col_exclusive):
-                    vertex_nearby_feature_x_velocities_by_row_col[vertex_row][vertex_col].append(feature_x_velocity)
-                    vertex_nearby_feature_y_velocities_by_row_col[vertex_row][vertex_col].append(feature_y_velocity)
-
-
-    def _get_feature_positions_in_window(self, early_window, late_window, window_offset):
-        '''
-        Helper method for _place_window_feature_velocities_into_list.
-
-        Track and return features that appear between the two given frames, eliminating outliers
-        using by applying a homography using RANSAC.
-
-        Input:
-
-        * early_window: A NumPy array (or a view into one) representing a subsection of the pixels
-            in the frame before late_window.
-        * late_window: A NumPy array (or a view into one) representing a subsection of the pixels
-            in the frame after early_window.
-        * offset_location: A tuple (x, y) representing the offset of the windows within their frame,
-            relative to the frame's top left corner.
-
-        Output:
-
-        A tuple of the following items in order.
-
-        * early_features: A CV_32FC2 array (see https://stackoverflow.com/a/47617999) of positions
-            containing the coordinates of each non-outlying feature in early_window that was
-            successfully tracked in late_window. These coordinates are expressed relative to the
-            frame, not the window. If fewer than
-            self.homography_min_number_corresponding_features such features were found,
-            early_features is None.
-        * late_features: A CV_32FC2 array (see https://stackoverflow.com/a/47617999) of positions
-            containing the coordinates of each non-outlying feature in late_window that was
-            successfully tracked from early_window. These coordinates are expressed relative to the
-            frame, not the window. If fewer than
-            self.homography_min_number_corresponding_features such features were found,
-            late_features is None.
-        '''
-
-        # gather all features that track between frames
-        early_features_including_outliers, late_features_including_outliers = self._get_all_matched_features_between_images(early_window, late_window)
-        if early_features_including_outliers is None:
-            return (None, None)
-
-        # eliminate outlying features using RANSAC
-        _, outlier_features = cv2.findHomography(
-            early_features_including_outliers, late_features_including_outliers, method=cv2.RANSAC
-        )
-        outlier_features_mask = outlier_features.flatten().astype(dtype=bool)
-        early_features = early_features_including_outliers[outlier_features_mask]
-        late_features = late_features_including_outliers[outlier_features_mask]
-
-        # Add a constant offset to feature coordinates to express them
-        # relative to the original window's top left corner, not the window's
-        return (early_features + window_offset, late_features + window_offset)
-
-
-    def _get_all_matched_features_between_images(self, early_window, late_window):
-        '''
-        Helper method for _get_unstabilized_frames_and_video_features and _get_feature_positions_in_window.
+        Helper method for _get_unstabilized_vertex_velocities and _compute_cropping_ratio_and_distortion_score.
 
         Detect features in the early window using the MeshFlowStabilizer's feature_detector
         and track them into the late window using cv2.calcOpticalFlowPyrLK.
 
         Input:
 
-        * early_window: A NumPy array (or a view into one) representing a subsection of the pixels
-            in the frame before late_window.
-        * late_window: A NumPy array (or a view into one) representing a subsection of the pixels
-            in the frame after early_window.
+        * early_frame: A NumPy array representing the frame before late_frame.
+        * late_frame: A NumPy array representing the frame after early_frame.
 
         Output:
 
         A tuple of the following items in order.
 
         * early_features: A CV_32FC2 array (see https://stackoverflow.com/a/47617999) of positions
-            containing the coordinates of each feature in early_window that was
-            successfully tracked in late_window. These coordinates are expressed relative to the
+            containing the coordinates of each feature in early_frame that was
+            successfully tracked in late_frame. These coordinates are expressed relative to the
             window. If fewer than
             self.homography_min_number_corresponding_features such features were found,
             early_features is None.
         * late_features: A CV_32FC2 array (see https://stackoverflow.com/a/47617999) of positions
-            containing the coordinates of each feature in late_window that was
-            successfully tracked from early_window. These coordinates are expressed relative to the
+            containing the coordinates of each feature in late_frame that was
+            successfully tracked from early_frame. These coordinates are expressed relative to the
             window. If fewer than
             self.homography_min_number_corresponding_features such features were found,
             late_features is None.
+        * early_to_late_homography: A homography matrix that maps a point in early_frame to its
+            corresponding location in late_frame, assuming the point is not undergoing motion.
+            If fewer than
+            self.homography_min_number_corresponding_features such features were found,
+            early_to_late_homography is None.
         '''
+
+        early_keypoints = self.feature_detector.detect(early_frame)
+        if len(early_keypoints) < self.homography_min_number_corresponding_features:
+            return (None, None, None)
 
         # convert a KeyPoint list into a CV_32FC2 array containing the coordinates of each KeyPoint;
         # see https://stackoverflow.com/a/55398871 and https://stackoverflow.com/a/47617999
-        early_keypoints = self.feature_detector.detect(early_window)
-        if len(early_keypoints) < self.homography_min_number_corresponding_features:
-            return (None, None)
-
-        early_features_including_unmatched = np.float32(cv2.KeyPoint_convert(early_keypoints)[:, np.newaxis, :])
-        late_features_including_unmatched, matched_features, _ = cv2.calcOpticalFlowPyrLK(
-            early_window, late_window, early_features_including_unmatched, None
+        early_features_including_outliers_and_unmatched = np.float32(cv2.KeyPoint_convert(early_keypoints)[:, np.newaxis, :])
+        late_features_including_outliers_and_unmatched, matched_features, _ = cv2.calcOpticalFlowPyrLK(
+            early_frame, late_frame, early_features_including_outliers_and_unmatched, None
         )
 
+        # eliminate features that were not matched
         matched_features_mask = matched_features.flatten().astype(dtype=bool)
-        early_features = early_features_including_unmatched[matched_features_mask]
-        late_features = late_features_including_unmatched[matched_features_mask]
+        early_features_including_outliers = early_features_including_outliers_and_unmatched[matched_features_mask]
+        late_features_including_outliers = late_features_including_outliers_and_unmatched[matched_features_mask]
+
+        if len(early_features_including_outliers) < self.homography_min_number_corresponding_features:
+            return (None, None, None)
+
+        # eliminate outlier features using RANSAC
+        early_to_late_homography, outlier_features = cv2.findHomography(
+            early_features_including_outliers, late_features_including_outliers, method=cv2.RANSAC
+        )
+        outlier_features_mask = outlier_features.flatten().astype(dtype=bool)
+        early_features = early_features_including_outliers[outlier_features_mask]
+        late_features = late_features_including_outliers[outlier_features_mask]
 
         if len(early_features) < self.homography_min_number_corresponding_features:
-            return (None, None)
+            return (None, None, None)
 
-        return (early_features, late_features)
+        return (early_features, late_features, early_to_late_homography)
 
 
     def _get_stabilized_vertex_displacements(self, num_frames, optimization_formula, adaptive_weights_definition, vertex_unstabilized_displacements_by_frame_index, homographies):
@@ -839,7 +752,6 @@ class MeshFlowStabilizer:
                 if adaptive_weights_definition == MeshFlowStabilizer.ADAPTIVE_WEIGHTS_DEFINITION_ORIGINAL:
                     adaptive_weight_candidate_2 = 5.83 * affine_component + 4.88
                 else:  # ADAPTIVE_WEIGHTS_DEFINITION_FLIPPED
-                    # TODO double-check this is the correct sign flip
                     adaptive_weight_candidate_2 = 5.83 * affine_component - 4.88
 
                 adaptive_weights[frame_index] = max(
@@ -1221,11 +1133,9 @@ class MeshFlowStabilizer:
             for frame_index in t:
                 unstabilized_frame = unstabilized_frames[frame_index]
                 cropped_frame = cropped_frames[frame_index]
-                unstabilized_features, cropped_features = self._get_all_matched_features_between_images(
+                _, _, unstabilized_to_cropped_homography = self._get_matched_features_and_homography(
                     unstabilized_frame, cropped_frame
                 )
-
-                unstabilized_to_cropped_homography, _ = cv2.findHomography(unstabilized_features, cropped_features)
 
                 # the scaling component has x-component cropped_to_unstabilized_homography[0][0]
                 # and y-component cropped_to_unstabilized_homography[1][1],
