@@ -54,7 +54,7 @@ class MeshFlowStabilizer:
 
 
     def __init__(self, mesh_row_count=16, mesh_col_count=16,
-        mesh_outlier_subregion_row_count=4, mesh_outlier_subregion_col_count=4,
+        mesh_outlier_subframe_row_count=4, mesh_outlier_subframe_col_count=4,
         feature_ellipse_row_count=10, feature_ellipse_col_count=10,
         homography_min_number_corresponding_features=4,
         temporal_smoothing_radius=10, optimization_num_iterations=100,
@@ -68,10 +68,10 @@ class MeshFlowStabilizer:
             NOTE There are 1 + mesh_row_count vertices per row.
         * mesh_col_count: The number of cols contained in the mesh.
             NOTE There are 1 + mesh_col_count vertices per column.
-        * mesh_outlier_subregion_row_count: The height in rows of each subregion when breaking down
-            the image down into subregions to eliminate outlying features.
-        * mesh_outlier_subregion_col_count: The width of columns of each subregion when breaking
-            down the image down into subregions to eliminate outlying features.
+        * mesh_outlier_subframe_row_count: The height in rows of each subframe when breaking down
+            the image down into subframes to eliminate outlying features.
+        * mesh_outlier_subframe_col_count: The width of columns of each subframe when breaking
+            down the image down into subframes to eliminate outlying features.
         * feature_ellipse_row_count: The height in rows of the ellipse drawn around each feature
             to match it with vertices in the mesh.
         * feature_ellipse_col_count: The width in columns of the ellipse drawn around each feature
@@ -96,8 +96,8 @@ class MeshFlowStabilizer:
 
         self.mesh_col_count = mesh_col_count
         self.mesh_row_count = mesh_row_count
-        self.mesh_outlier_subregion_row_count = mesh_outlier_subregion_row_count
-        self.mesh_outlier_subregion_col_count = mesh_outlier_subregion_col_count
+        self.mesh_outlier_subframe_row_count = mesh_outlier_subframe_row_count
+        self.mesh_outlier_subframe_col_count = mesh_outlier_subframe_col_count
         self.feature_ellipse_row_count = feature_ellipse_row_count
         self.feature_ellipse_col_count = feature_ellipse_col_count
         self.homography_min_number_corresponding_features = homography_min_number_corresponding_features
@@ -391,14 +391,14 @@ class MeshFlowStabilizer:
         * frame_width: the width of the windows' frames.
         * frame_height: the height of the windows' frames.
         * early_features: A CV_32FC2 array (see https://stackoverflow.com/a/47617999) of positions
-            containing the coordinates of each non-outlying feature in early_window that was
-            successfully tracked in late_window. These coordinates are expressed relative to the
+            containing the coordinates of each non-outlying feature in early_subframe that was
+            successfully tracked in late_subframe. These coordinates are expressed relative to the
             frame, not the window. If fewer than
             self.homography_min_number_corresponding_features such features were found,
             early_features is None.
         * late_features: A CV_32FC2 array (see https://stackoverflow.com/a/47617999) of positions
-            containing the coordinates of each non-outlying feature in late_window that was
-            successfully tracked from early_window. These coordinates are expressed relative to the
+            containing the coordinates of each non-outlying feature in late_subframe that was
+            successfully tracked from early_subframe. These coordinates are expressed relative to the
             frame, not the window. If fewer than
             self.homography_min_number_corresponding_features such features were found,
             late_features is None.
@@ -504,57 +504,166 @@ class MeshFlowStabilizer:
             early_to_late_homography is None.
         '''
 
-        early_keypoints = self.feature_detector.detect(early_frame)
-        if len(early_keypoints) < self.homography_min_number_corresponding_features:
+        # get features that have had outliers removed by applying homographies to sub-frames
+
+        frame_height, frame_width = early_frame.shape[:2]
+        subframe_width = math.ceil(frame_width / self.mesh_outlier_subframe_col_count)
+        subframe_height = math.ceil(frame_height / self.mesh_outlier_subframe_row_count)
+
+        # early_features_by_subframe[i] contains a CV_32FC2 array of the early features in the
+        # frame's i^th subframe;
+        # late_features_by_subframe[i] is defined similarly
+        early_features_by_subframe = []
+        late_features_by_subframe = []
+
+        # TODO parallelize
+        for subframe_left_x in range(0, frame_width, subframe_width):
+            for subframe_top_y in range(0, frame_height, subframe_height):
+                early_subframe = early_frame[subframe_top_y:subframe_top_y+subframe_height,
+                                           subframe_left_x:subframe_left_x+subframe_width]
+                late_subframe = late_frame[subframe_top_y:subframe_top_y+subframe_height,
+                                         subframe_left_x:subframe_left_x+subframe_width]
+                subframe_offset = [subframe_left_x, subframe_top_y]
+                subframe_early_features, subframe_late_features = self._get_features_in_subframe(
+                    early_subframe, late_subframe, subframe_offset
+                )
+                if subframe_early_features is not None:
+                    early_features_by_subframe.append(subframe_early_features)
+                if subframe_late_features is not None:
+                    late_features_by_subframe.append(subframe_late_features)
+
+        early_features = np.concatenate(early_features_by_subframe)
+        late_features = np.concatenate(late_features_by_subframe)
+
+        if len(early_features) < self.homography_min_number_corresponding_features:
             return (None, None, None)
 
-        # convert a KeyPoint list into a CV_32FC2 array containing the coordinates of each KeyPoint;
-        # see https://stackoverflow.com/a/55398871 and https://stackoverflow.com/a/47617999
-        early_features_including_outliers_and_unmatched = np.float32(cv2.KeyPoint_convert(early_keypoints)[:, np.newaxis, :])
-        late_features_including_outliers_and_unmatched, matched_features, _ = cv2.calcOpticalFlowPyrLK(
-            early_frame, late_frame, early_features_including_outliers_and_unmatched, None
+        early_to_late_homography, _ = cv2.findHomography(
+            early_features, late_features
         )
 
-        # eliminate features that were not matched
-        matched_features_mask = matched_features.flatten().astype(dtype=bool)
-        early_features_including_outliers = early_features_including_outliers_and_unmatched[matched_features_mask]
-        late_features_including_outliers = late_features_including_outliers_and_unmatched[matched_features_mask]
+        return (early_features, late_features, early_to_late_homography)
 
-        if len(early_features_including_outliers) < self.homography_min_number_corresponding_features:
-            return (None, None, None)
 
-        # eliminate outlier features using RANSAC
-        early_to_late_homography, outlier_features = cv2.findHomography(
+    def _get_features_in_subframe(self, early_subframe, late_subframe, subframe_offset):
+        '''
+        Helper method for _get_matched_features_and_homography.
+        Track and return features that appear between the two given frames, eliminating outliers
+        by applying a homography using RANSAC.
+
+        Input:
+
+        * early_subframe: A NumPy array (or a view into one) representing a subsection of the pixels
+            in the frame before late_subframe.
+        * late_subframe: A NumPy array (or a view into one) representing a subsection of the pixels
+            in the frame after early_subframe.
+        * offset_location: A tuple (x, y) representing the offset of the subframe within its frame,
+            relative to the frame's top left corner.
+
+        Output:
+
+        A tuple of the following items in order.
+        * early_features: A CV_32FC2 array (see https://stackoverflow.com/a/47617999) of positions
+            containing the coordinates of each non-outlying feature in early_subframe that was
+            successfully tracked in late_subframe. These coordinates are expressed relative to the
+            frame, not the subframe. If fewer than
+            self.homography_min_number_corresponding_features such features were found,
+            early_features is None.
+        * late_features: A CV_32FC2 array (see https://stackoverflow.com/a/47617999) of positions
+            containing the coordinates of each non-outlying feature in late_subframe that was
+            successfully tracked from early_subframe. These coordinates are expressed relative to the
+            frame, not the subframe. If fewer than
+            self.homography_min_number_corresponding_features such features were found,
+            late_features is None.
+        '''
+
+        # gather all features that track between frames
+        early_features_including_outliers, late_features_including_outliers = self._get_all_matched_features_between_subframes(early_subframe, late_subframe)
+        if early_features_including_outliers is None:
+            return (None, None)
+
+        # eliminate outlying features using RANSAC
+        _, outlier_features = cv2.findHomography(
             early_features_including_outliers, late_features_including_outliers, method=cv2.RANSAC
         )
         outlier_features_mask = outlier_features.flatten().astype(dtype=bool)
         early_features = early_features_including_outliers[outlier_features_mask]
         late_features = late_features_including_outliers[outlier_features_mask]
 
-        if len(early_features) < self.homography_min_number_corresponding_features:
-            return (None, None, None)
+        # Add a constant offset to feature coordinates to express them
+        # relative to the original frame's top left corner, not the subframe's
+        return (early_features + subframe_offset, late_features + subframe_offset)
 
-        return (early_features, late_features, early_to_late_homography)
+
+    def _get_all_matched_features_between_subframes(self, early_subframe, late_subframe):
+        '''
+        Helper method for _get_feature_positions_in_subframe.
+        Detect features in the early subframe using the MeshFlowStabilizer's feature_detector
+        and track them into the late subframe using cv2.calcOpticalFlowPyrLK.
+
+        Input:
+
+        * early_subframe: A NumPy array (or a view into one) representing a subsection of the pixels
+            in the frame before late_subframe.
+        * late_subframe: A NumPy array (or a view into one) representing a subsection of the pixels
+            in the frame after early_subframe.
+
+        Output:
+
+        A tuple of the following items in order.
+        * early_features: A CV_32FC2 array (see https://stackoverflow.com/a/47617999) of positions
+            containing the coordinates of each feature in early_subframe that was
+            successfully tracked in late_subframe. These coordinates are expressed relative to the
+            window. If fewer than
+            self.homography_min_number_corresponding_features such features were found,
+            early_features is None.
+        * late_features: A CV_32FC2 array (see https://stackoverflow.com/a/47617999) of positions
+            containing the coordinates of each feature in late_subframe that was
+            successfully tracked from early_subframe. These coordinates are expressed relative to the
+            window. If fewer than
+            self.homography_min_number_corresponding_features such features were found,
+            late_features is None.
+        '''
+
+        # convert a KeyPoint list into a CV_32FC2 array containing the coordinates of each KeyPoint;
+        # see https://stackoverflow.com/a/55398871 and https://stackoverflow.com/a/47617999
+        early_keypoints = self.feature_detector.detect(early_subframe)
+        if len(early_keypoints) < self.homography_min_number_corresponding_features:
+            return (None, None)
+
+        early_features_including_unmatched = np.float32(cv2.KeyPoint_convert(early_keypoints)[:, np.newaxis, :])
+        late_features_including_unmatched, matched_features, _ = cv2.calcOpticalFlowPyrLK(
+            early_subframe, late_subframe, early_features_including_unmatched, None
+        )
+
+        matched_features_mask = matched_features.flatten().astype(dtype=bool)
+        early_features = early_features_including_unmatched[matched_features_mask]
+        late_features = late_features_including_unmatched[matched_features_mask]
+
+        if len(early_features) < self.homography_min_number_corresponding_features:
+            return (None, None)
+
+        return (early_features, late_features)
 
 
     def _get_stabilized_vertex_displacements(self, num_frames, optimization_formula, adaptive_weights_definition, vertex_unstabilized_displacements_by_frame_index, homographies):
         '''
         Helper method for stabilize.
 
-        Return each vertex's residual displacement at each frame in the stabilized video.
+        Return each vertex's displacement at each frame in the stabilized video.
 
-        Specifically, find the residual displacements that minimize an energy function.
-        The energy function takes residual displacements as input and outputs a number corresponding
+        Specifically, find the displacements that minimize an energy function.
+        The energy function takes displacements as input and outputs a number corresponding
         to how how shaky the input is.
 
-        The output array of stabilized residual displacements is calculated using the
+        The output array of stabilized displacements is calculated using the
         Jacobi method. For each mesh vertex, the method solves the equation
         A p = b
         for vector p,
-        where entry p[i] contains the vertex's stabilized residual displacement at frame i.
+        where entry p[i] contains the vertex's stabilized displacement at frame i.
         The entries in matrix A and vector b were derived by finding the partial derivative of the
         energy function with respect to each p[i] and setting them all to 0. Thus, solving for p in
-        A p = b results in residual displacements that produce a local extremum (which we can safely
+        A p = b results in displacements that produce a local extremum (which we can safely
         assume is a local minimum) in the energy function.
 
         Input:
@@ -564,7 +673,7 @@ class MeshFlowStabilizer:
         * adaptive_weights_definition: Which definition to use for the energy function's adaptive
             weights.
         * vertex_unstabilized_displacements_by_frame_index: A NumPy array containing the
-            unstabilized residual displacements of each vertex in the MeshFlow mesh, as outputted
+            unstabilized displacements of each vertex in the MeshFlow mesh, as outputted
             by _get_unstabilized_frames_and_video_features.
         * homographies: A NumPy array of homographies as generated by
             _get_unstabilized_vertex_displacements_and_homographies.
@@ -573,10 +682,10 @@ class MeshFlowStabilizer:
 
         * vertex_stabilized_displacements_by_frame_index: A NumPy array of shape
             (num_frames, self.mesh_row_count, self.mesh_col_count, 2)
-            containing the stabilized residual displacements of each vertex in the MeshFlow mesh.
+            containing the stabilized displacements of each vertex in the MeshFlow mesh.
             In particular,
             vertex_stabilized_displacements_by_frame_index[frame_index][row][col][0]
-            contains the residual x-displacement (the x-displacement in addition to any imposed by
+            contains the x-displacement (the x-displacement in addition to any imposed by
             global homographies) of the mesh vertex at the given row and col from frame 0 to frame
             frame_index, both inclusive.
             vertex_unstabilized_displacements_by_frame_index[frame_index][row][col][1]
@@ -846,10 +955,10 @@ class MeshFlowStabilizer:
         * num_frames: The number of frames in the unstabilized video.
         * unstabilized_frames: A list of the unstabilized frames, each represented as a NumPy array.
         * vertex_unstabilized_displacements_by_frame_index: A NumPy array containing the
-            unstabilized residual displacements of each vertex in the MeshFlow mesh, as generated by
+            unstabilized displacements of each vertex in the MeshFlow mesh, as generated by
             _get_unstabilized_vertex_displacements_and_homographies.
         * vertex_stabilized_displacements_by_frame_index: A NumPy array containing the
-            stabilized residual displacements of each vertex in the MeshFlow mesh, as generated by
+            stabilized displacements of each vertex in the MeshFlow mesh, as generated by
             _get_stabilized_vertex_displacements.
 
         Output:
@@ -876,7 +985,7 @@ class MeshFlowStabilizer:
         # contain the x and y positions of the vertex at the given row and col
         row_col_to_unstabilized_vertex_x_y = np.reshape(unstabilized_vertex_x_y, (self.mesh_row_count + 1, self.mesh_col_count + 1, 2))
 
-        # residual_velocity_diffs_by_frame_index[frame_index] is a CV_32FC2 NumPy array
+        # stabilized_motion_mesh_by_frame_index[frame_index] is a CV_32FC2 NumPy array
         # (see https://stackoverflow.com/a/47617999) containing the amount to add to each vertex
         # coordinate to transform it from its unstabilized position at frame frame_index to its
         # stabilized position at frame frame_index.
@@ -1165,7 +1274,7 @@ class MeshFlowStabilizer:
 
         * num_frames: The number of frames in the video.
         * vertex_stabilized_displacements_by_frame_index: A NumPy array containing the
-            stabilized residual displacements of each vertex in the MeshFlow mesh, as generated by
+            stabilized displacements of each vertex in the MeshFlow mesh, as generated by
             _get_stabilized_vertex_displacements.
 
         Output:
