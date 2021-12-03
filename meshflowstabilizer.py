@@ -33,10 +33,11 @@ class MeshFlowStabilizer:
     * ADAPTIVE_WEIGHTS_DEFINITION_ORIGINAL: Calculate the adaptive weights using the model suggested in the
         original paper.
     * ADAPTIVE_WEIGHTS_DEFINITION_FLIPPED: Calculate the adaptive weights using a variant of the original model
-        in which one of the terms has had its sign flipped. Suggested on GitHub TODO cite URL.
+        in which one of the terms has had its sign flipped. Suggested on GitHub; see
+        https://github.com/sudheerachary/Mesh-Flow-Video-Stabilization/issues/12#issuecomment-553737073
     * ADAPTIVE_WEIGHTS_DEFINITION_CONSTANT_HIGH: Set the adaptive weights using a constant high value.
         This model appears in the implementation on GitHub; see
-        https://github.com/sudheerachary/Mesh-Flow-Video-Stabilization/issues/12#issuecomment-553737073.
+        https://github.com/sudheerachary/Mesh-Flow-Video-Stabilization/tree/5780fe750cf7dc35e5cfcd0b4a56d408ce3a9e53
     * ADAPTIVE_WEIGHTS_DEFINITION_CONSTANT_LOW: Set the adaptive weights to a constant low value.
         This model is based on the authors' claim that smaller adaptive weights lead to less
         cropping and wobbling.
@@ -1372,8 +1373,8 @@ class MeshFlowStabilizer:
 
 def main():
     # TODO get video path from command line args
-    input_path = 'videos/data_small-shaky-5.m4v'
-    output_path = 'videos/data_small-shaky-5_stabilized.m4v'
+    input_path = 'videos/video-1/video-1.m4v'
+    output_path = 'videos/video-1/stabilized-method-constant-high.m4v'
     stabilizer = MeshFlowStabilizer()
     cropping_ratio, distortion_score, stability_score = stabilizer.stabilize(
         input_path, output_path,
