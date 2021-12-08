@@ -45,7 +45,8 @@ class MeshFlowStabilizer:
         feature_ellipse_row_count=10, feature_ellipse_col_count=10,
         homography_min_number_corresponding_features=4,
         temporal_smoothing_radius=10, optimization_num_iterations=100,
-        color_outside_image_area_bgr=(0, 0, 255)):
+        color_outside_image_area_bgr=(0, 0, 255),
+        visualize=False):
         '''
         Constructor.
 
@@ -75,6 +76,8 @@ class MeshFlowStabilizer:
         * color_outside_image_area_bgr: The color, expressed in BGR, to display behind the
             stabilized footage in the output.
             NOTE This color should be removed during cropping, but is customizable just in case.
+        * visualize: Whether or not to display a video loop of the unstabilized and cropped,
+            stabilized videos after saving the stabilized video. Pressing Q closes the window.
 
         Output:
 
@@ -91,6 +94,7 @@ class MeshFlowStabilizer:
         self.temporal_smoothing_radius = temporal_smoothing_radius
         self.optimization_num_iterations = optimization_num_iterations
         self.color_outside_image_area_bgr = color_outside_image_area_bgr
+        self.visualize = visualize
 
         self.feature_detector = cv2.FastFeatureDetector_create()
 
@@ -158,7 +162,9 @@ class MeshFlowStabilizer:
         stability_score = self._compute_stability_score(num_frames, vertex_stabilized_displacements_by_frame_index)
 
         self._write_stabilized_video(output_path, num_frames, frames_per_second, codec, cropped_frames)
-        self._display_unstablilized_and_stabilized_video_loop(num_frames, frames_per_second, unstabilized_frames, cropped_frames)
+
+        if self.visualize:
+            self._display_unstablilized_and_cropped_video_loop(num_frames, frames_per_second, unstabilized_frames, cropped_frames)
 
         return (cropping_ratio, distortion_score, stability_score)
 
@@ -1252,28 +1258,30 @@ class MeshFlowStabilizer:
         return (x_stability_score + y_stability_score) / 2.0
 
 
-    def _display_unstablilized_and_stabilized_video_loop(self, num_frames, frames_per_second, unstabilized_frames, stabilized_frames):
+    def _display_unstablilized_and_cropped_video_loop(self, num_frames, frames_per_second, unstabilized_frames, cropped_frames):
         '''
         Helper function for stabilize.
 
-        Display a loop of the stabilized and unstabilized videos.
+        Display a loop of the unstabilized and cropped, stabilized videos.
 
         Input:
 
         * num_frames: The number of frames in the video.
         * frames_per_second: The video framerate in frames per second.
         * unstabilized_frames: A list of the unstabilized frames, each represented as a NumPy array.
-        * stabilized_frames: A list of the stabilized frames, each represented as a NumPy array.
+        * cropped_frames: A list of the cropped, stabilized frames, each represented as a NumPy
+            array.
 
         Output:
 
-        (The unstabilized and stabilized videos loop. Pressing the Q key closes them.)
+        (The unstabilized and cropped, stabilized videos loop in a new window. Pressing the Q key
+        closes the window.)
         '''
 
         milliseconds_per_frame = int(1000/frames_per_second)
         while True:
             for i in range(num_frames):
-                cv2.imshow('unstabilized and stabilized video', np.vstack((unstabilized_frames[i], stabilized_frames[i])))
+                cv2.imshow('unstabilized and stabilized video', np.vstack((unstabilized_frames[i], cropped_frames[i])))
                 if cv2.waitKey(milliseconds_per_frame) & 0xFF == ord('q'):
                     return
 
@@ -1317,10 +1325,10 @@ def main():
     # TODO get video path from command line args
     input_path = 'videos/video-1/video-1.m4v'
     output_path = 'videos/video-1/stabilized-method-constant-high.m4v'
-    stabilizer = MeshFlowStabilizer()
+    stabilizer = MeshFlowStabilizer(visualize=True)
     cropping_ratio, distortion_score, stability_score = stabilizer.stabilize(
         input_path, output_path,
-        adaptive_weights_definition=MeshFlowStabilizer.ADAPTIVE_WEIGHTS_DEFINITION_CONSTANT_HIGH
+        adaptive_weights_definition=MeshFlowStabilizer.ADAPTIVE_WEIGHTS_DEFINITION_CONSTANT_HIGH,
     )
     print('cropping ratio:', cropping_ratio)
     print('distortion score:', distortion_score)
