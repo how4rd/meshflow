@@ -148,7 +148,7 @@ class MeshFlowStabilizer:
         unstabilized_frames, num_frames, frames_per_second, codec = self._get_unstabilized_frames_and_video_features(input_path)
         vertex_unstabilized_displacements_by_frame_index, homographies = self._get_unstabilized_vertex_displacements_and_homographies(num_frames, unstabilized_frames)
         vertex_stabilized_displacements_by_frame_index = self._get_stabilized_vertex_displacements(
-            num_frames, adaptive_weights_definition,
+            num_frames, unstabilized_frames, adaptive_weights_definition,
             vertex_unstabilized_displacements_by_frame_index, homographies
         )
         stabilized_frames, crop_boundaries = self._get_stabilized_frames_and_crop_boundaries(
@@ -629,7 +629,7 @@ class MeshFlowStabilizer:
         return (early_features, late_features)
 
 
-    def _get_stabilized_vertex_displacements(self, num_frames, adaptive_weights_definition, vertex_unstabilized_displacements_by_frame_index, homographies):
+    def _get_stabilized_vertex_displacements(self, num_frames, unstabilized_frames, adaptive_weights_definition, vertex_unstabilized_displacements_by_frame_index, homographies):
         '''
         Helper method for stabilize.
 
@@ -652,6 +652,7 @@ class MeshFlowStabilizer:
         Input:
 
         * num_frames: The number of frames in the video.
+        * unstabilized_frames: A list of the unstabilized frames, each represented as a NumPy array.
         * adaptive_weights_definition: Which definition to use for the energy function's adaptive
             weights.
         * vertex_unstabilized_displacements_by_frame_index: A NumPy array containing the
@@ -675,9 +676,9 @@ class MeshFlowStabilizer:
         '''
 
 
-        frame_height, frame_width = vertex_unstabilized_displacements_by_frame_index[0].shape[:2]
+        frame_height, frame_width = unstabilized_frames[0].shape[:2]
 
-        off_diagonal_coefficients, on_diagonal_coefficients = self._get_jacobi_method_input(num_frames, frame_height, frame_width, adaptive_weights_definition, homographies)
+        off_diagonal_coefficients, on_diagonal_coefficients = self._get_jacobi_method_input(num_frames, frame_width, frame_height, adaptive_weights_definition, homographies)
 
         # vertex_unstabilized_displacements_by_frame_index is indexed by
         # frame_index, then row, then col, then velocity component.
@@ -1324,11 +1325,11 @@ class MeshFlowStabilizer:
 def main():
     # TODO get video path from command line args
     input_path = 'videos/video-1/video-1.m4v'
-    output_path = 'videos/video-1/stabilized-method-constant-high.m4v'
+    output_path = 'videos/video-1/stabilized-method-original.m4v'
     stabilizer = MeshFlowStabilizer(visualize=True)
     cropping_ratio, distortion_score, stability_score = stabilizer.stabilize(
         input_path, output_path,
-        adaptive_weights_definition=MeshFlowStabilizer.ADAPTIVE_WEIGHTS_DEFINITION_CONSTANT_HIGH,
+        adaptive_weights_definition=MeshFlowStabilizer.ADAPTIVE_WEIGHTS_DEFINITION_ORIGINAL,
     )
     print('cropping ratio:', cropping_ratio)
     print('distortion score:', distortion_score)
